@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini Swiggy — Distributed Food Delivery</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Global Top Navigation -->
+  <header class="top-nav">
+    <div class="nav-container">
+      <div class="brand-group" id="nav-brand" role="button" tabindex="0">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
+            <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
+            <line x1="6" y1="1" x2="6" y2="4"></line>
+            <line x1="10" y1="1" x2="10" y2="4"></line>
+            <line x1="14" y1="1" x2="14" y2="4"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">Mini Swiggy</span>
+          <span class="brand-badge">Distributed V2</span>
+        </div>
+      </div>
+
+      <!-- Center Status Pill -->
+      <div class="backend-status-pill" id="backend-status-badge" title="TCP Backend Connection State">
+        <span class="status-dot status-checking"></span>
+        <span id="backend-status-text">Checking Backend...</span>
+      </div>
+
+      <!-- Right Action Items -->
+      <div class="nav-actions">
+        <!-- Customer Identity Badge (Verified Seed User Alice Customer) -->
+        <div class="customer-badge" title="Development Customer Identity (ID: 1)">
+          <div class="customer-avatar">A</div>
+          <div class="customer-info">
+            <span class="customer-label">Ordering as</span>
+            <span class="customer-name" id="current-customer-name">Alice Customer (ID: 1)</span>
+          </div>
+        </div>
+
+        <button class="nav-btn" id="btn-nav-orders" title="View past orders">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          <span>My Orders</span>
+        </button>
+
+        <button class="nav-btn cart-btn" id="btn-nav-cart" aria-label="Shopping Cart">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="9" cy="21" r="1"></circle>
+            <circle cx="20" cy="21" r="1"></circle>
+            <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+          </svg>
+          <span>Cart</span>
+          <span class="cart-counter" id="cart-item-count">0</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Notification Banner / Toast Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- Main Content Views -->
+  <main class="main-container" id="main-content">
+    
+    <!-- VIEW 1: Restaurants List -->
+    <section class="view-section active" id="view-restaurants">
+      <div class="hero-banner">
+        <div class="hero-content">
+          <h1>Taste the Authentic Flavors of Hyderabad</h1>
+          <p>Order biryanis, crispy dosas, and artisanal pizzas. Powered by low-level TCP socket streaming & SQLite ACID persistence.</p>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <div>
+          <h2>Available Kitchens</h2>
+          <p class="section-subtitle">Real-time restaurants synced directly from the Mini Swiggy TCP backend</p>
+        </div>
+        <button class="btn-secondary btn-sm" id="btn-refresh-restaurants">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6"></path>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+          Refresh
+        </button>
+      </div>
+
+      <!-- Restaurant Cards Grid -->
+      <div class="restaurants-grid" id="restaurants-list">
+        <!-- Rendered dynamically by app.js -->
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Connecting to Mini Swiggy TCP backend...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: Restaurant Menu -->
+    <section class="view-section" id="view-menu">
+      <div class="menu-nav-bar">
+        <button class="btn-text" id="btn-back-to-restaurants">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="19" y1="12" x2="5" y2="12"></line>
+            <polyline points="12 19 5 12 12 5"></polyline>
+          </svg>
+          Back to Kitchens
+        </button>
+      </div>
+
+      <div class="restaurant-header-card" id="restaurant-detail-header">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+
+      <div class="section-header">
+        <div>
+          <h2>Menu Offerings</h2>
+          <p class="section-subtitle">Authoritative prices and availability are verified by the backend</p>
+        </div>
+      </div>
+
+      <div class="menu-grid" id="menu-items-list">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </section>
+
+    <!-- VIEW 3: My Orders History -->
+    <section class="view-section" id="view-orders">
+      <div class="menu-nav-bar">
+        <button class="btn-text" id="btn-back-from-orders">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="19" y1="12" x2="5" y2="12"></line>
+            <polyline points="12 19 5 12 12 5"></polyline>
+          </svg>
+          Back to Kitchens
+        </button>
+      </div>
+
+      <div class="section-header">
+        <div>
+          <h2>Order History</h2>
+          <p class="section-subtitle">Historical orders for Alice Customer (ID: 1) sorted newest first</p>
+        </div>
+        <button class="btn-secondary btn-sm" id="btn-refresh-orders">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6"></path>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+          Refresh History
+        </button>
+      </div>
+
+      <div class="orders-list" id="orders-history-list">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Slide-out Shopping Cart Drawer -->
+  <div class="drawer-overlay" id="cart-drawer-overlay">
+    <div class="drawer" id="cart-drawer">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <h3>Your Food Cart</h3>
+          <span class="restaurant-tag" id="cart-restaurant-name">No restaurant selected</span>
+        </div>
+        <button class="close-btn" id="btn-close-cart" aria-label="Close cart">&times;</button>
+      </div>
+
+      <div class="drawer-body" id="cart-items-container">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+
+      <div class="drawer-footer" id="cart-footer">
+        <div class="price-summary">
+          <div class="price-row">
+            <span>Estimated Item Total</span>
+            <span id="cart-subtotal-amount">₹0.00</span>
+          </div>
+          <div class="price-row text-muted">
+            <span>Delivery & Packaging</span>
+            <span>Free (Demo)</span>
+          </div>
+          <div class="price-row total-row">
+            <span>To Pay (Estimated)</span>
+            <span class="total-price" id="cart-total-amount">₹0.00</span>
+          </div>
+        </div>
+
+        <div class="demo-notice-card">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <span>Demo system: Final price & availability are authoritatively verified by SQLite.</span>
+        </div>
+
+        <div class="cart-actions">
+          <button class="btn-danger-outline btn-sm" id="btn-clear-cart">Clear Cart</button>
+          <button class="btn-primary" id="btn-proceed-checkout">Proceed to Checkout</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Checkout & Simulated Payment Modal -->
+  <div class="modal-overlay" id="checkout-modal-overlay">
+    <div class="modal" id="checkout-modal">
+      <div class="modal-header">
+        <h3 id="checkout-modal-title">Complete Your Food Order</h3>
+        <button class="close-btn" id="btn-close-checkout">&times;</button>
+      </div>
+
+      <div class="modal-body" id="checkout-modal-body">
+        <!-- STEP 1: Review & Place Order -->
+        <div class="checkout-step active" id="checkout-step-review">
+          <div class="order-review-box">
+            <h4>Order Summary</h4>
+            <div id="checkout-items-summary"></div>
+            <div class="checkout-total-box">
+              <span>Estimated Total:</span>
+              <span class="highlight-total" id="checkout-estimated-total">₹0.00</span>
+            </div>
+          </div>
+
+          <div class="alert-box alert-info">
+            <strong>Order Flow Note:</strong> Placing this order sends an NDJSON request to the TCP server. Prices are queried from SQLite and snapshotted atomically into <code>orders</code> and <code>order_items</code>.
+          </div>
+
+          <button class="btn-primary btn-block" id="btn-submit-order">
+            Place Food Order
+          </button>
+        </div>
+
+        <!-- STEP 2: Simulated Payment Panel -->
+        <div class="checkout-step" id="checkout-step-payment">
+          <div class="payment-order-info">
+            <div class="info-tag">Order Placed: #<strong id="pay-order-id">-</strong></div>
+            <div class="info-status status-placed" id="pay-order-status">placed · pending payment</div>
+          </div>
+
+          <div class="payment-amount-hero">
+            <span class="pay-label">Authoritative Server Total:</span>
+            <span class="pay-amount" id="pay-server-amount">₹0.00</span>
+          </div>
+
+          <div class="alert-box alert-warning">
+            <strong>Demo Simulation Only:</strong> No real bank charges or credit cards are involved.
+          </div>
+
+          <div class="payment-options">
+            <label class="form-label">Select Payment Method:</label>
+            <div class="payment-methods-grid">
+              <label class="method-card">
+                <input type="radio" name="pay-method" value="simulated_upi" checked>
+                <span>Instant UPI (GPay/PhonePe)</span>
+              </label>
+              <label class="method-card">
+                <input type="radio" name="pay-method" value="simulated_card">
+                <span>Debit / Credit Card</span>
+              </label>
+            </div>
+
+            <!-- Simulation Controller (For testing and demonstrating fault tolerance!) -->
+            <div class="sim-toggle-box">
+              <label class="form-label">Simulation Behavior:</label>
+              <div class="sim-toggle-options">
+                <label class="radio-chip">
+                  <input type="radio" name="pay-sim-result" value="success" checked>
+                  <span class="chip-success">Simulate Payment Success</span>
+                </label>
+                <label class="radio-chip">
+                  <input type="radio" name="pay-sim-result" value="failure">
+                  <span class="chip-failure">Simulate Payment Failure (Retryable)</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn-success btn-block" id="btn-confirm-payment">
+            Pay Now (Simulated)
+          </button>
+        </div>
+
+        <!-- STEP 3: Order Receipt & Confirmation -->
+        <div class="checkout-step" id="checkout-step-confirmation">
+          <div class="success-banner" id="confirmation-banner">
+            <div class="success-icon">✓</div>
+            <h3 id="confirmation-title">Payment Successful!</h3>
+            <p id="confirmation-subtitle">Your order has been placed and accepted by the kitchen.</p>
+          </div>
+
+          <div class="receipt-box" id="confirmation-receipt-content">
+            <!-- Rendered dynamically by app.js -->
+          </div>
+
+          <div class="confirmation-actions">
+            <button class="btn-secondary" id="btn-confirm-view-orders">Track in My Orders</button>
+            <button class="btn-primary" id="btn-confirm-back-home">Back to Kitchens</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Restaurant Switch Conflict Alert Modal -->
+  <div class="modal-overlay" id="conflict-modal-overlay">
+    <div class="modal modal-sm" id="conflict-modal">
+      <div class="modal-header">
+        <h3>Replace Cart Items?</h3>
+        <button class="close-btn" id="btn-close-conflict">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Your cart already contains items from <strong id="conflict-current-restaurant"></strong>. A food delivery order can only be placed from one restaurant at a time.</p>
+        <p class="text-muted">Would you like to discard the existing cart and start fresh with <strong id="conflict-new-restaurant"></strong>?</p>
+        <div class="modal-actions">
+          <button class="btn-secondary" id="btn-conflict-cancel">Keep Existing Cart</button>
+          <button class="btn-danger" id="btn-conflict-confirm">Clear &amp; Add New</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Order Receipt Detail Modal (for My Orders view) -->
+  <div class="modal-overlay" id="receipt-modal-overlay">
+    <div class="modal" id="receipt-modal">
+      <div class="modal-header">
+        <h3>Order Receipt #<span id="detail-receipt-id"></span></h3>
+        <button class="close-btn" id="btn-close-receipt">&times;</button>
+      </div>
+      <div class="modal-body" id="detail-receipt-body">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-dismiss-receipt">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <div class="footer-container">
+      <div class="footer-brand">Mini Swiggy Distributed Systems Project</div>
+      <div class="footer-meta">
+        <span>Architecture: Browser &rarr; HTTP Gateway (8000) &rarr; TCP Socket Server (5000) &rarr; SQLite</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
