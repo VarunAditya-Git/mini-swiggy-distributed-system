@@ -153,6 +153,62 @@ class SwiggyClient:
         # Read until we have a complete line (ends with '\n').
         return self._read_response()
 
+    # --- Convenience methods for V1 & V2 actions ---
+    def ping(self) -> dict:
+        """Send a health-check ping."""
+        return self.send("ping", {})
+
+    def list_restaurants(self) -> dict:
+        """List all restaurants in the system."""
+        return self.send("list_restaurants", {})
+
+    def list_menu(self, restaurant_id: int) -> dict:
+        """List menu items for a specific restaurant."""
+        return self.send("list_menu", {"restaurant_id": restaurant_id})
+
+    def create_order(self, customer_id: int, restaurant_id: int,
+                     items: list[dict]) -> dict:
+        """
+        Create a new food order.
+
+        Args:
+            customer_id:   ID of the customer user.
+            restaurant_id: ID of the chosen restaurant.
+            items:         List of dicts, e.g. [{"item_id": 1, "quantity": 2}].
+        """
+        return self.send("create_order", {
+            "customer_id": customer_id,
+            "restaurant_id": restaurant_id,
+            "items": items,
+        })
+
+    def simulate_payment(self, order_id: int, simulate_status: str = "paid",
+                         payment_method: str = "simulated_upi",
+                         simulate_failure: bool = False) -> dict:
+        """
+        Simulate payment for an order.
+
+        Args:
+            order_id:         ID of the order to pay for.
+            simulate_status:  'paid' or 'failed'.
+            payment_method:   Payment method description.
+            simulate_failure: If True, forces payment failure simulation.
+        """
+        return self.send("simulate_payment", {
+            "order_id": order_id,
+            "simulate_status": simulate_status,
+            "payment_method": payment_method,
+            "simulate_failure": simulate_failure,
+        })
+
+    def get_order(self, order_id: int) -> dict:
+        """Retrieve details and item snapshots of an order."""
+        return self.send("get_order", {"order_id": order_id})
+
+    def get_order_history(self, customer_id: int) -> dict:
+        """Retrieve full order history for a customer."""
+        return self.send("get_order_history", {"customer_id": customer_id})
+
     def _read_response(self) -> dict:
         """
         Read bytes from the socket until a complete newline-terminated
@@ -193,35 +249,56 @@ def _print_response(response: dict) -> None:
 
 
 # -------------------------------------------------------------------
-# CLI demo
+# Helper to parse items CLI argument: "1:2,2:1" or '[{"item_id": 1, "quantity": 2}]'
 # -------------------------------------------------------------------
-def _demo_ping(client: SwiggyClient) -> None:
-    print("--- ping ---")
-    _print_response(client.send("ping", {}))
-
-
-def _demo_list_restaurants(client: SwiggyClient) -> None:
-    print("--- list_restaurants ---")
-    _print_response(client.send("list_restaurants", {}))
-
-
-def _demo_list_menu(client: SwiggyClient, restaurant_id: int) -> None:
-    print(f"--- list_menu (restaurant_id={restaurant_id}) ---")
-    _print_response(client.send("list_menu", {"restaurant_id": restaurant_id}))
+def _parse_items_arg(raw: str) -> list[dict]:
+    """Parse items from JSON or shorthand like '1:2,2:1'."""
+    raw = raw.strip()
+    if raw.startswith("["):
+        return json.loads(raw)
+    items = []
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(f"Invalid item specification '{pair}'. Use format 'item_id:quantity' (e.g. 1:2)")
+        item_id_s, qty_s = pair.split(":", 1)
+        items.append({"item_id": int(item_id_s.strip()), "quantity": int(qty_s.strip())})
+    return items
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mini Swiggy V1 TCP Client Demo")
+    parser = argparse.ArgumentParser(description="Mini Swiggy TCP Client (V1 & V2)")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # V1 actions
     subparsers.add_parser("ping", help="Send a health-check ping")
     subparsers.add_parser("list_restaurants", help="List all restaurants")
 
     menu_p = subparsers.add_parser("list_menu", help="List a restaurant's menu")
-    menu_p.add_argument("restaurant_id", type=int,
-                        help="Integer ID of the restaurant")
+    menu_p.add_argument("restaurant_id", type=int, help="Integer ID of the restaurant")
+
+    # V2 actions
+    order_p = subparsers.add_parser("create_order", help="Create a food order")
+    order_p.add_argument("--customer-id", type=int, required=True, help="Customer user ID")
+    order_p.add_argument("--restaurant-id", type=int, required=True, help="Restaurant ID")
+    order_p.add_argument("--items", type=str, required=True,
+                         help="Items as JSON or shorthand 'item_id:qty,item_id:qty' (e.g. 1:2,2:1)")
+
+    pay_p = subparsers.add_parser("simulate_payment", help="Simulate payment for an order")
+    pay_p.add_argument("order_id", type=int, help="Order ID to pay for")
+    pay_p.add_argument("--fail", action="store_true", help="Simulate payment failure")
+    pay_p.add_argument("--method", default="simulated_upi", help="Payment method name")
+
+    get_ord_p = subparsers.add_parser("get_order", help="Retrieve details of a single order")
+    get_ord_p.add_argument("order_id", type=int, help="Order ID to retrieve")
+
+    hist_p = subparsers.add_parser("get_order_history", help="Retrieve order history for a customer")
+    hist_p.add_argument("customer_id", type=int, help="Customer user ID")
+
     return parser.parse_args()
 
 
@@ -231,11 +308,26 @@ if __name__ == "__main__":
     try:
         with SwiggyClient(host=args.host, port=args.port) as client:
             if args.command == "ping":
-                _demo_ping(client)
+                _print_response(client.ping())
             elif args.command == "list_restaurants":
-                _demo_list_restaurants(client)
+                _print_response(client.list_restaurants())
             elif args.command == "list_menu":
-                _demo_list_menu(client, args.restaurant_id)
+                _print_response(client.list_menu(args.restaurant_id))
+            elif args.command == "create_order":
+                items = _parse_items_arg(args.items)
+                _print_response(client.create_order(args.customer_id, args.restaurant_id, items))
+            elif args.command == "simulate_payment":
+                status = "failed" if args.fail else "paid"
+                _print_response(client.simulate_payment(
+                    args.order_id,
+                    simulate_status=status,
+                    payment_method=args.method,
+                    simulate_failure=args.fail,
+                ))
+            elif args.command == "get_order":
+                _print_response(client.get_order(args.order_id))
+            elif args.command == "get_order_history":
+                _print_response(client.get_order_history(args.customer_id))
     except ConnectionRefusedError as exc:
         print(f"[client] ERROR: {exc}")
         sys.exit(1)
