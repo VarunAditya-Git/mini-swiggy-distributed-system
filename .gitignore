@@ -1,0 +1,60 @@
+# =============================================================
+# Mini Swiggy — .gitignore
+# Standard Python + project-specific exclusions
+# =============================================================
+
+# ----- Python bytecode & caches -----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ----- Distribution / packaging -----
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ----- Virtual environments -----
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# ----- Secrets & credentials -----
+# NEVER commit tokens, passwords, or API keys.
+.env
+.env.*
+secrets.json
+*.pem
+*.key
+
+# ----- Generated SQLite database -----
+# swiggy.db is generated at runtime by: python main.py init
+# Recreate it with: python main.py all
+# Committing a binary database file causes large, unreadable diffs.
+swiggy.db
+*.db
+*.sqlite
+*.sqlite3
+
+# ----- Test caches -----
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml           # junit / coverage reports
+
+# ----- IDE / editor files -----
+.vscode/
+.idea/
+*.suo
+*.user
+*.sw?
+.DS_Store
+Thumbs.db
+
+# ----- OS temporary files -----
+desktop.ini
