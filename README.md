@@ -1,28 +1,27 @@
 # Mini Swiggy — Distributed Food Delivery System
 
-> **Version 0 — Database Foundation**
-> This version is **not** a distributed system yet.
-> Version 0 establishes the project structure and the SQLite database
-> that all future versions will build on.
+> **Current branch: `feature/v1-tcp-client-server`**
+> V0 (database foundation) is on `main`.
+> V1 (TCP client–server) is being developed on this branch.
 
 ---
 
 ## What this project is
 
-Mini Swiggy is an **educational, incremental** food-delivery application
-built to teach Python and distributed-systems concepts one layer at a time.
+Mini Swiggy is an **educational, incremental** food-delivery application built
+to teach Python and distributed-systems concepts one layer at a time.
 
-| Version | Scope |
-|---------|-------|
-| **V0 ✅ (this)** | Project structure · SQLite schema · Seed data · Automated tests |
-| V1 (planned) | Python TCP sockets · Single-server request handling |
-| V2 (planned) | Concurrent clients with threading |
-| V3 (planned) | Independent networked services |
-| V4+ (planned) | Messaging · Fault handling · Distributed concepts |
+| Version | Branch | Scope |
+|---------|--------|-------|
+| **V0 ✅** | `main` | Project structure · SQLite schema · Seed data · Automated tests |
+| **V1 (this)** | `feature/v1-tcp-client-server` | TCP sockets · Newline-delimited JSON · Client–server communication |
+| V2 (planned) | — | Concurrent clients (threading) |
+| V3 (planned) | — | Independent networked services |
+| V4+ (planned) | — | Messaging · Fault handling · Distributed concepts |
 
-No networking, authentication, payment processing, microservices, or
-distributed components have been implemented yet. The README will be
-updated as each version is completed.
+> **V1 is not a fully distributed system.** The client and server run on the
+> same machine and communicate over the loopback interface (127.0.0.1).
+> True distribution (separate machines, network partitions, consensus) comes later.
 
 ---
 
@@ -31,11 +30,12 @@ updated as each version is completed.
 | Tool | Purpose |
 |------|---------|
 | Python 3.11+ | Application language |
-| SQLite (built-in `sqlite3`) | Persistent local database |
-| pytest | Automated testing |
-| Git + GitHub | Version control |
+| `socket` (stdlib) | TCP networking |
+| `json` (stdlib) | Message serialisation |
+| SQLite (`sqlite3` stdlib) | Persistent local database |
+| `pytest` | Automated testing |
 
-No external Python packages are required beyond `pytest` for running tests.
+No external Python packages are required beyond `pytest`.
 
 ---
 
@@ -43,214 +43,237 @@ No external Python packages are required beyond `pytest` for running tests.
 
 ```
 MiniSwiggy/
-├── .gitignore               ← Excludes generated files, secrets, caches
+├── .gitignore               ← Excludes swiggy.db, __pycache__, secrets
 ├── README.md                ← This file
-├── main.py                  ← CLI entry point (init / seed / show / all)
+├── main.py                  ← V0 CLI (init / seed / show / all)
 │
 ├── database/
-│   ├── __init__.py          ← Package marker; exports get_connection, init_db
+│   ├── __init__.py
 │   ├── db.py                ← Connection factory + init_db()
-│   ├── schema.sql           ← CREATE TABLE statements for all 8 tables
-│   └── seed.py              ← Idempotent sample restaurants & menu items
+│   ├── schema.sql           ← 8-table SQLite schema
+│   └── seed.py              ← Idempotent seed data (3 restaurants, 6 items)
 │
 ├── server/
-│   └── __init__.py          ← Reserved for V1 TCP server
+│   ├── __init__.py
+│   ├── tcp_server.py        ← V1: TCP server (single-client, sequential)
+│   └── request_handler.py  ← V1: Validates requests, queries SQLite, builds responses
+│
 ├── clients/
-│   └── __init__.py          ← Reserved for V1 client stubs
+│   ├── __init__.py
+│   └── tcp_client.py       ← V1: TCP client library + CLI demo
+│
 ├── services/
 │   └── __init__.py          ← Reserved for V3 microservices
-├── frontend/                ← Reserved for future web UI
 │
 ├── docs/
-│   └── ARCHITECTURE.md      ← Table design, relationships, decisions
+│   ├── ARCHITECTURE.md      ← Database design, table relationships
+│   └── V1_TCP_PROTOCOL.md  ← V1 request/response format, framing, error codes
 │
 └── tests/
-    └── test_schema.py       ← 11 automated tests for schema & constraints
+    ├── test_schema.py        ← V0: 11 database schema and seed tests
+    ├── test_request_handler.py ← V1: 20 unit tests for the request handler
+    └── test_tcp_server.py   ← V1: 15 integration tests over real TCP sockets
 ```
 
-> `swiggy.db` is **not committed to Git** — it is a generated binary file.
-> Recreate it from scratch with the commands in the *Setup* section below.
+> `swiggy.db` is **not committed** — recreate with `python main.py all`.
 
 ---
 
 ## Requirements
 
 - **Python 3.11 or newer** — check with `python --version`
-- **pytest** — install with `pip install pytest`
-- **SQLite3 CLI** *(optional)* — for manual database inspection
+- **pytest** — `pip install pytest`
 
 ---
 
-## Windows PowerShell setup
+## Windows PowerShell — Complete command reference
 
 > Run all commands from inside the `MiniSwiggy/` project folder.
 
-### Step 1 — Check Python version
+### Database setup (V0 — same as before)
 
 ```powershell
-python --version
-# Expected: Python 3.11.x or newer
+# Create swiggy.db, all tables, and seed sample data in one step:
+python main.py all
+
+# Or step by step:
+python main.py init    # create tables
+python main.py seed    # insert sample restaurants and menu items
+python main.py show    # print restaurants and menus to the terminal
 ```
 
-### Step 2 — Install pytest
+### Start the TCP server (V1)
+
+Open **Terminal 1** and run:
 
 ```powershell
-pip install pytest
-```
-
-### Step 3 — Initialise the database
-
-This creates `swiggy.db` and all eight tables.
-
-```powershell
-python main.py init
+python -m server.tcp_server
 ```
 
 Expected output:
 ```
-[db] Database initialised -> E:\Mini Swiggy\swiggy.db
+[server] Mini Swiggy V1 TCP server listening on 127.0.0.1:5000
+[server] Press Ctrl+C to stop.
 ```
 
-### Step 4 — Seed sample data
-
-Inserts 3 restaurants and 6 menu items.
-
+Custom host/port:
 ```powershell
-python main.py seed
+python -m server.tcp_server --host 127.0.0.1 --port 6000
 ```
 
-### Step 5 — Print the restaurant and menu directory
+### Use the TCP client (V1)
+
+Open **Terminal 2** (server must be running in Terminal 1):
 
 ```powershell
-python main.py show
+# Health check
+python -m clients.tcp_client ping
+
+# List all restaurants (reads from SQLite)
+python -m clients.tcp_client list_restaurants
+
+# List menu for restaurant ID 1
+python -m clients.tcp_client list_menu 1
+
+# List menu for restaurant ID 2
+python -m clients.tcp_client list_menu 2
+
+# List menu for restaurant ID 3
+python -m clients.tcp_client list_menu 3
+
+# Custom host/port
+python -m clients.tcp_client --host 127.0.0.1 --port 6000 ping
 ```
 
-### Step 6 — Do all three steps at once (recommended for a fresh setup)
+### Run all tests
 
 ```powershell
-python main.py all
-```
-
-### Step 7 — Verify idempotency (run seed twice; must produce no duplicates)
-
-```powershell
-python main.py seed
-python main.py seed
-python main.py show
-# Still exactly 3 restaurants and 6 menu items
-```
-
----
-
-## Running the automated tests
-
-```powershell
+# All tests (V0 + V1)
 python -m pytest tests/ -v
-```
 
-### Expected output (11 tests, all passing)
+# V0 schema tests only
+python -m pytest tests/test_schema.py -v
 
-```
-tests/test_schema.py::test_all_tables_created                    PASSED
-tests/test_schema.py::test_duplicate_email_rejected              PASSED
-tests/test_schema.py::test_invalid_role_rejected                 PASSED
-tests/test_schema.py::test_menu_item_fk_enforced                 PASSED
-tests/test_schema.py::test_menu_item_price_must_be_positive[0]   PASSED
-tests/test_schema.py::test_menu_item_price_must_be_positive[-10] PASSED
-tests/test_schema.py::test_menu_item_price_must_be_positive[-0.01] PASSED
-tests/test_schema.py::test_order_item_quantity_must_be_positive  PASSED
-tests/test_schema.py::test_seed_is_idempotent                    PASSED
-tests/test_schema.py::test_seed_restaurant_names                 PASSED
-tests/test_schema.py::test_each_restaurant_has_two_items         PASSED
+# V1 request handler tests (no server needed)
+python -m pytest tests/test_request_handler.py -v
 
-11 passed in ~0.6s
-```
-
-Each test uses a temporary, isolated database — the real `swiggy.db` is
-never modified by the test suite.
-
----
-
-## Inspecting the database manually
-
-```powershell
-# List all tables
-sqlite3 swiggy.db ".tables"
-
-# Show all restaurants
-sqlite3 swiggy.db "SELECT * FROM restaurants;"
-
-# Show all menu items with restaurant names
-sqlite3 swiggy.db "SELECT r.name, m.name, m.price FROM menu_items m JOIN restaurants r ON m.restaurant_id = r.restaurant_id;"
-
-# Show table schema
-sqlite3 swiggy.db ".schema restaurants"
+# V1 TCP integration tests (server starts in background thread)
+python -m pytest tests/test_tcp_server.py -v
 ```
 
 ---
 
-## Recreating the database from scratch
+## How a request travels end to end
 
-If you delete `swiggy.db`, recreate it in one command:
-
-```powershell
-python main.py all
 ```
-
-This runs `init_db()` (creates tables) then `seed_data()` (inserts sample
-restaurants and menu items) and finally prints the directory.
+[Client]                [Network]               [Server]
+  |                                                 |
+  | SwiggyClient.send("list_menu", {restaurant_id: 1})
+  |                                                 |
+  | Serialise to JSON + "\n"                        |
+  | {"request_id":"r1","action":"list_menu","payload":{"restaurant_id":1}}\n
+  |                                                 |
+  |------------ sendall(bytes) ------------------->  |
+  |              (TCP stream)                       |
+  |                                           recv() + buffer
+  |                                           finds "\n" → complete message
+  |                                           json.loads(line)
+  |                                           handle_request(raw_dict)
+  |                                           → list_menu handler
+  |                                           → SELECT from menu_items WHERE restaurant_id=1
+  |                                           → build response dict
+  |                                           json.dumps(response) + "\n"
+  |<----------- sendall(response bytes) -----------  |
+  |                                                  |
+  | _read_response(): recv() loop until "\n"         |
+  | json.loads(line_bytes)                           |
+  | return dict to caller                            |
+```
 
 ---
 
-## Database tables at a glance
+## Sample client output
+
+### ping
+```json
+{
+  "request_id": "a1b2c3d4",
+  "ok": true,
+  "data": { "status": "ok" }
+}
+```
+
+### list_restaurants (excerpt)
+```json
+{
+  "request_id": "a1b2c3d4",
+  "ok": true,
+  "data": [
+    { "restaurant_id": 1, "name": "Hyderabad Spice House", "is_open": true, ... },
+    { "restaurant_id": 2, "name": "Dosa Corner", "is_open": true, ... },
+    { "restaurant_id": 3, "name": "Pizza Junction", "is_open": true, ... }
+  ]
+}
+```
+
+### list_menu (restaurant_id=1)
+```json
+{
+  "request_id": "a1b2c3d4",
+  "ok": true,
+  "data": [
+    { "item_id": 1, "name": "Chicken Biryani", "price": 180.0, "is_available": true },
+    { "item_id": 2, "name": "Veg Biryani",     "price": 120.0, "is_available": true }
+  ]
+}
+```
+
+---
+
+## Database tables
 
 | Table | What it stores |
 |-------|----------------|
 | `users` | All actors: customers, sellers, delivery partners, admins |
 | `restaurants` | Restaurants listed on the platform |
-| `menu_items` | Food items for each restaurant (price > 0 enforced) |
+| `menu_items` | Food items for each restaurant |
 | `orders` | A customer's purchase from one restaurant |
-| `order_items` | Line items in an order (quantity > 0; price snapshot) |
+| `order_items` | Line items in an order |
 | `payments` | One payment record per order |
 | `delivery_partners` | Operational profile for delivery users |
 | `deliveries` | Assignment of a partner to an order |
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full entity-
-relationship diagram, engineering decisions, and version roadmap.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`docs/V1_TCP_PROTOCOL.md`](docs/V1_TCP_PROTOCOL.md) for full details.
 
 ---
 
-## Sample seed data
+## V1 limitations
 
-| Restaurant | Item | Price |
-|------------|------|-------|
-| Hyderabad Spice House | Chicken Biryani | Rs 180 |
-| Hyderabad Spice House | Veg Biryani | Rs 120 |
-| Dosa Corner | Masala Dosa | Rs 90 |
-| Dosa Corner | Idli Sambar | Rs 60 |
-| Pizza Junction | Paneer Pizza | Rs 220 |
-| Pizza Junction | Margherita Pizza | Rs 180 |
+- **One client at a time.** A second client must wait until the first disconnects.
+  Concurrent client support (threading) is planned for V2.
+- **No authentication.** Any client can call any action.
+- **Read-only in V1.** list_restaurants and list_menu only. No order placement yet.
+- **Loopback only by default.** The server binds to 127.0.0.1 and is not reachable
+  from other machines without changing the `--host` flag.
+- **Not a distributed system yet.** Microservices, network partitions, and distributed
+  consensus are future milestones.
 
 ---
 
-## What V0 does NOT include
+## Recreating the database from scratch
 
-- No TCP networking or socket programming
-- No user authentication or login flows
-- No payment gateway integration
-- No web or mobile frontend
-- No microservices or distributed components
-- No fault tolerance or replication
-
-These will be added in subsequent versions.
+```powershell
+# Delete swiggy.db if it exists, then:
+python main.py all
+```
 
 ---
 
 ## Contributing
 
-This is a personal educational project built step by step.
-Pull requests are welcome for bug fixes and documentation improvements.
-Please open an issue before starting any large feature work.
+Educational project built step by step. Pull requests welcome for bug fixes and
+documentation improvements. Please open an issue before starting large feature work.
 
 ---
 
