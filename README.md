@@ -1,8 +1,8 @@
 # Mini Swiggy — Distributed Food Delivery System
 
-> **Current branch: `feature/v2-core-ordering`**  
-> V0 (database foundation) and V1 (TCP client–server) have been merged into `main`.  
-> V2 (core food ordering, atomic transactions, price snapshots, and simulated payments) is implemented on this branch.
+> **Current branch: `feature/web-customer-interface`**  
+> V0 (database), V1 (TCP client-server), and V2 (core food ordering) have been merged into `main`.  
+> This branch implements the **Customer Web Interface** and lightweight **HTTP API Gateway**.
 
 ---
 
@@ -14,12 +14,11 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 |---|---|---|
 | **V0** | Merged to `main` | Database foundation · SQLite schema (8 tables) · Seed data · 11 tests |
 | **V1** | Merged to `main` | Raw TCP sockets · Newline-delimited JSON framing · Read-only actions · 42 tests |
-| **V2 (this branch)** | Complete | **Core Food Ordering** · Atomic transactions · Price snapshots · Server-side price calculation · Simulated payments & idempotency · Order history · 41 new tests (94 total) |
+| **V2** | Merged to `main` | Core Food Ordering · Atomic transactions · Price snapshots · Simulated payments · Order history · 41 tests |
+| **Web Extension (this branch)** | Complete | **Customer Web Interface & HTTP Gateway** · Modern web UI · REST API bridge · Single-restaurant cart · Receipt viewer · 18 new tests (112 total) |
 | **V3** (planned) | Next | Concurrency & Worker thread pools for simultaneous clients |
 | **V4** (planned) | Future | Independent networked microservices (Restaurant, Ordering, Payment, Delivery) |
 | **V5+** (planned) | Future | Asynchronous messaging, caching, fault tolerance, and consensus |
-
-> **V2 Scope Note**: V2 adds functional ordering, transactional integrity, and simulated payment, but is **not yet a distributed production-grade Swiggy replica**. The client and server run on localhost over TCP sockets, processing clients sequentially without external message brokers or cloud infrastructure.
 
 ---
 
@@ -30,8 +29,10 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | Language | Python 3.11+ | Clean, readable standard library implementations |
 | Networking | `socket` (stdlib) | Raw TCP transport and low-level stream framing |
 | Serialization | `json` (stdlib) | Newline-delimited JSON (NDJSON) protocol |
+| Web Gateway | `http.server` (stdlib) | Non-blocking ThreadingHTTPServer bridging HTTP to TCP |
+| Frontend | Vanilla HTML5, CSS3, JS | Modern, responsive Indian food-delivery interface |
 | Storage | SQLite (`sqlite3` stdlib) | Relational persistence with foreign keys and ACID transactions |
-| Testing | `pytest` | Comprehensive unit and real TCP integration testing (94 automated tests) |
+| Testing | `pytest` | Comprehensive unit and real TCP integration testing (112 automated tests) |
 
 ---
 
@@ -58,17 +59,28 @@ MiniSwiggy/
 │   ├── __init__.py
 │   └── tcp_client.py            ← Reusable SwiggyClient class and interactive CLI demo
 │
+├── gateway/
+│   ├── __init__.py
+│   └── http_gateway.py          ← Lightweight HTTP gateway translating HTTP to TCP NDJSON
+│
+├── web/
+│   ├── index.html               ← Responsive customer food ordering web interface
+│   ├── styles.css               ← Modern Swiggy-inspired visual design
+│   └── app.js                   ← Client application logic & safe DOM rendering
+│
 ├── docs/
 │   ├── ARCHITECTURE.md           ← Architecture & schema relationship reference
 │   ├── V1_TCP_PROTOCOL.md       ← V1 TCP protocol specification
-│   └── V2_PROTOCOL.md           ← Complete V2 protocol reference (all 7 actions, payloads, state machines)
+│   ├── V2_PROTOCOL.md           ← Complete V2 protocol reference (all 7 actions, payloads, state machines)
+│   └── WEB_INTERFACE.md         ← Web interface architecture, gateway translation, run instructions
 │
 └── tests/
     ├── test_schema.py            ← V0: 11 database schema constraint & seed tests
     ├── test_request_handler.py    ← V1: 23 unit tests for read-only actions & framing errors
     ├── test_tcp_server.py        ← V1: 19 real TCP socket integration tests
     ├── test_v2_order_handler.py  ← V2: 31 unit tests for ordering, payment, rollback, and snapshots
-    └── test_v2_tcp.py            ← V2: 10 real TCP socket integration tests for V2 ordering flows
+    ├── test_v2_tcp.py            ← V2: 10 real TCP socket integration tests for V2 ordering flows
+    └── test_web_gateway.py       ← Web: 18 unit & integration tests for gateway and security guards
 ```
 
 ---
@@ -131,6 +143,26 @@ python -m clients.tcp_client get_order 1
 # 6. Retrieve order history for Customer 1 (newest orders first)
 python -m clients.tcp_client get_order_history 1
 ```
+
+### 4. Start the Web Interface (Browser Experience)
+
+To experience the modern customer-facing web UI:
+
+1. **Terminal 1** (TCP Server):
+   ```powershell
+   python -m server.tcp_server
+   ```
+2. **Terminal 2** (HTTP Gateway):
+   ```powershell
+   python -m gateway.http_gateway
+   ```
+3. **Open in Browser**:
+   ```
+   http://127.0.0.1:8000
+   ```
+   *The website communicates with the HTTP gateway, which forwards NDJSON requests to the backend TCP socket server.*
+
+See [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md) for full architectural documentation.
 
 ---
 
