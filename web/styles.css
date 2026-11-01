@@ -920,7 +920,23 @@ body {
 
 .status-placed { background-color: var(--warning-light); color: var(--warning); }
 .status-accepted { background-color: var(--success-light); color: var(--success); }
-.status-failed { background-color: var(--danger-light); color: var(--danger); }
+.status-preparing { background-color: #e0f2fe; color: #0284c7; }
+.status-ready, .status-ready_for_pickup { background-color: #ede9fe; color: #7c3aed; }
+.status-rejected, .status-cancelled, .status-failed { background-color: var(--danger-light); color: var(--danger); }
+
+.seller-hub-link {
+  text-decoration: none;
+  color: var(--primary);
+  background-color: #fff3e8;
+  border: 1px solid #fed7aa;
+  font-weight: 600;
+}
+
+.seller-hub-link:hover {
+  background-color: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+}
 
 .payment-amount-hero {
   text-align: center;

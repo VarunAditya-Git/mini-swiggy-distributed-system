@@ -57,6 +57,9 @@ ERROR_STATUS_MAP = {
     "ITEM_UNAVAILABLE": 409,
     "RESTAURANT_CLOSED": 409,
     "PAYMENT_ALREADY_COMPLETED": 409,
+    "UNAUTHORIZED_ROLE": 403,
+    "FORBIDDEN": 403,
+    "INVALID_TRANSITION": 409,
     "UNKNOWN_ACTION": 404,
     "MALFORMED_JSON": 400,
     "MESSAGE_TOO_LARGE": 413,
@@ -300,13 +303,67 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("get_order_history", {"customer_id": customer_id})
                 return
 
-        # 6. Any other unmatched /api route
+        # 6. Seller Profile: GET /api/seller/profile?seller_id=2
+        if path == "/api/seller/profile":
+            seller_id = self._parse_int_query_param(query, "seller_id")
+            if seller_id is None:
+                return
+            self._forward_and_respond("get_seller_profile", {"seller_id": seller_id})
+            return
+
+        # 7. Seller Orders: GET /api/seller/orders?seller_id=2(&status=pending)
+        if path == "/api/seller/orders":
+            seller_id = self._parse_int_query_param(query, "seller_id")
+            if seller_id is None:
+                return
+            status_param = query.get("status")
+            status_val = status_param[0] if status_param and status_param[0] else None
+            payload = {"seller_id": seller_id}
+            if status_val:
+                payload["status"] = status_val
+            self._forward_and_respond("get_seller_orders", payload)
+            return
+
+        # 8. Seller Order Detail: GET /api/seller/orders/{order_id}?seller_id=2
+        if path.startswith("/api/seller/orders/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "orders":
+                try:
+                    order_id = int(parts[3])
+                except ValueError:
+                    self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
+                    return
+                seller_id = self._parse_int_query_param(query, "seller_id")
+                if seller_id is None:
+                    return
+                self._forward_and_respond("get_seller_order", {"seller_id": seller_id, "order_id": order_id})
+                return
+
+        # 9. Seller Menu: GET /api/seller/menu?seller_id=2
+        if path == "/api/seller/menu":
+            seller_id = self._parse_int_query_param(query, "seller_id")
+            if seller_id is None:
+                return
+            self._forward_and_respond("get_seller_menu", {"seller_id": seller_id})
+            return
+
+        # 10. Any other unmatched /api route
         if path.startswith("/api/"):
             self._send_error(404, "NOT_FOUND", f"Unknown API endpoint '{path}'.")
             return
 
-        # 7. Static file serving from web/
+        # 11. Static file serving from web/
         self._serve_static_file(path)
+
+    # -------------------------------------------------------------------
+    # OPTIONS Dispatcher (CORS preflight)
+    # -------------------------------------------------------------------
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.end_headers()
 
     # -------------------------------------------------------------------
     # POST Dispatcher
@@ -342,12 +399,153 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("simulate_payment", body)
                 return
 
-        # 3. Unmatched API routes
+        # 3. Seller update order status: POST /api/seller/orders/{order_id}/status
+        if path.startswith("/api/seller/orders/") and path.endswith("/status"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 5 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "orders" and parts[4] == "status":
+                try:
+                    order_id = int(parts[3])
+                except ValueError:
+                    self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
+                    return
+
+                body = self._read_json_body()
+                if body is None:
+                    return
+
+                body["order_id"] = order_id
+                if "seller_id" not in body:
+                    query = urllib.parse.parse_qs(parsed_url.query)
+                    seller_param = query.get("seller_id")
+                    if seller_param and seller_param[0]:
+                        try:
+                            body["seller_id"] = int(seller_param[0])
+                        except ValueError:
+                            pass
+                self._forward_and_respond("update_order_status", body)
+                return
+
+        # 4. Seller add menu item: POST /api/seller/menu
+        if path == "/api/seller/menu":
+            body = self._read_json_body()
+            if body is None:
+                return
+            if "seller_id" not in body:
+                query = urllib.parse.parse_qs(parsed_url.query)
+                seller_param = query.get("seller_id")
+                if seller_param and seller_param[0]:
+                    try:
+                        body["seller_id"] = int(seller_param[0])
+                    except ValueError:
+                        pass
+            self._forward_and_respond("add_menu_item", body, success_status=201)
+            return
+
+        # 5. Seller menu item availability (POST fallback): POST /api/seller/menu/{item_id}/availability
+        if path.startswith("/api/seller/menu/") and path.endswith("/availability"):
+            self._handle_seller_menu_availability(parsed_url, path)
+            return
+
+        # 6. Seller menu item update (POST fallback): POST /api/seller/menu/{item_id}
+        if path.startswith("/api/seller/menu/"):
+            self._handle_seller_menu_update(parsed_url, path)
+            return
+
+        # 7. Unmatched API routes
         if path.startswith("/api/"):
             self._send_error(404, "NOT_FOUND", f"Unknown API endpoint '{path}'.")
             return
 
         self._send_error(405, "METHOD_NOT_ALLOWED", "POST is only supported on /api/ endpoints.")
+
+    # -------------------------------------------------------------------
+    # PATCH Dispatcher
+    # -------------------------------------------------------------------
+    def do_PATCH(self) -> None:
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+
+        # 1. Update menu item availability: PATCH /api/seller/menu/{item_id}/availability
+        if path.startswith("/api/seller/menu/") and path.endswith("/availability"):
+            self._handle_seller_menu_availability(parsed_url, path)
+            return
+
+        # 2. Update menu item details: PATCH /api/seller/menu/{item_id}
+        if path.startswith("/api/seller/menu/"):
+            self._handle_seller_menu_update(parsed_url, path)
+            return
+
+        if path.startswith("/api/"):
+            self._send_error(404, "NOT_FOUND", f"Unknown API endpoint '{path}'.")
+            return
+
+        self._send_error(405, "METHOD_NOT_ALLOWED", "PATCH is only supported on seller menu endpoints.")
+
+    def _handle_seller_menu_availability(self, parsed_url, path: str) -> None:
+        parts = path.strip("/").split("/")
+        if len(parts) == 5 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "menu" and parts[4] == "availability":
+            try:
+                item_id = int(parts[3])
+            except ValueError:
+                self._send_error(400, "INVALID_PATH_PARAM", "item_id in URL must be an integer.")
+                return
+
+            body = self._read_json_body()
+            if body is None:
+                return
+
+            body["item_id"] = item_id
+            if "seller_id" not in body:
+                query = urllib.parse.parse_qs(parsed_url.query)
+                seller_param = query.get("seller_id")
+                if seller_param and seller_param[0]:
+                    try:
+                        body["seller_id"] = int(seller_param[0])
+                    except ValueError:
+                        pass
+            self._forward_and_respond("update_menu_item_availability", body)
+            return
+
+        self._send_error(404, "NOT_FOUND", f"Unknown API endpoint '{path}'.")
+
+    def _handle_seller_menu_update(self, parsed_url, path: str) -> None:
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "menu":
+            try:
+                item_id = int(parts[3])
+            except ValueError:
+                self._send_error(400, "INVALID_PATH_PARAM", "item_id in URL must be an integer.")
+                return
+
+            body = self._read_json_body()
+            if body is None:
+                return
+
+            body["item_id"] = item_id
+            if "seller_id" not in body:
+                query = urllib.parse.parse_qs(parsed_url.query)
+                seller_param = query.get("seller_id")
+                if seller_param and seller_param[0]:
+                    try:
+                        body["seller_id"] = int(seller_param[0])
+                    except ValueError:
+                        pass
+            self._forward_and_respond("update_menu_item", body)
+            return
+
+        self._send_error(404, "NOT_FOUND", f"Unknown API endpoint '{path}'.")
+
+    def _parse_int_query_param(self, query: dict, param_name: str) -> int | None:
+        """Helper to extract and validate an integer query parameter."""
+        param_list = query.get(param_name)
+        if not param_list or not param_list[0]:
+            self._send_error(400, "INVALID_REQUEST", f"Query parameter '{param_name}' is required.")
+            return None
+        try:
+            return int(param_list[0])
+        except ValueError:
+            self._send_error(400, "INVALID_REQUEST", f"Query parameter '{param_name}' must be an integer.")
+            return None
 
     # -------------------------------------------------------------------
     # Handlers & Helpers
@@ -418,6 +616,8 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         clean_path = req_path.strip("/")
         if not clean_path:
             clean_path = "index.html"
+        elif clean_path in ("seller", "seller/"):
+            clean_path = "seller.html"
 
         # Resolve path safely within web_dir
         base_dir = self.web_dir.resolve()

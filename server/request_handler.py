@@ -34,6 +34,9 @@ ERR_NOT_FOUND                 = "NOT_FOUND"
 ERR_ITEM_UNAVAILABLE          = "ITEM_UNAVAILABLE"
 ERR_RESTAURANT_CLOSED         = "RESTAURANT_CLOSED"
 ERR_PAYMENT_ALREADY_COMPLETED = "PAYMENT_ALREADY_COMPLETED"
+ERR_UNAUTHORIZED_ROLE         = "UNAUTHORIZED_ROLE"
+ERR_FORBIDDEN                 = "FORBIDDEN"
+ERR_INVALID_TRANSITION        = "INVALID_TRANSITION"
 ERR_DB_ERROR                  = "DB_ERROR"
 
 
@@ -618,16 +621,777 @@ def _handle_get_order_history(request_id: str, payload: dict) -> dict:
 
 
 # -------------------------------------------------------------------
+# Helper: Seller Authentication & Restaurant Verification (V3)
+# -------------------------------------------------------------------
+def _authenticate_seller(
+    conn: sqlite3.Connection,
+    request_id: str,
+    seller_id: object,
+) -> tuple[dict | None, dict | None, dict | None]:
+    """
+    Verify seller development identity and restaurant ownership.
+
+    Returns:
+        (restaurant_dict, user_dict, None) on success, or
+        (None, None, error_response_dict) on failure.
+    """
+    if seller_id is None:
+        return None, None, _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'seller_id'.")
+    if not isinstance(seller_id, int) or isinstance(seller_id, bool):
+        return None, None, _err(request_id, ERR_INVALID_PAYLOAD, "'seller_id' must be an integer.")
+
+    user = conn.execute(
+        "SELECT user_id, name, email, role, is_active FROM users WHERE user_id = ?;",
+        (seller_id,),
+    ).fetchone()
+
+    if user is None:
+        return None, None, _err(request_id, ERR_NOT_FOUND, f"No user found with id {seller_id}.")
+
+    if user["role"] != "seller":
+        return None, None, _err(
+            request_id,
+            ERR_UNAUTHORIZED_ROLE,
+            f"User {seller_id} is not a seller (role='{user['role']}').",
+        )
+
+    if not user["is_active"]:
+        return None, None, _err(request_id, ERR_FORBIDDEN, f"Seller account {seller_id} is deactivated.")
+
+    restaurant = conn.execute(
+        """
+        SELECT restaurant_id, name, description, approval_status, is_open, owner_user_id
+        FROM restaurants
+        WHERE owner_user_id = ?;
+        """,
+        (seller_id,),
+    ).fetchone()
+
+    if restaurant is None:
+        return None, None, _err(
+            request_id,
+            ERR_FORBIDDEN,
+            f"Seller {seller_id} does not own any restaurant.",
+        )
+
+    return dict(restaurant), dict(user), None
+
+
+# -------------------------------------------------------------------
+# Action: get_seller_profile / get_seller_restaurant (V3)
+# -------------------------------------------------------------------
+def _handle_get_seller_profile(request_id: str, payload: dict) -> dict:
+    """
+    Return seller identity, associated restaurant, and dashboard statistics.
+    """
+    seller_id = payload.get("seller_id")
+    try:
+        with get_connection() as conn:
+            restaurant, user, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            rid = restaurant["restaurant_id"]
+
+            total_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ?;",
+                (rid,),
+            ).fetchone()["c"]
+
+            pending_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND order_status IN ('placed', 'pending');",
+                (rid,),
+            ).fetchone()["c"]
+
+            accepted_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND order_status = 'accepted';",
+                (rid,),
+            ).fetchone()["c"]
+
+            preparing_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND order_status = 'preparing';",
+                (rid,),
+            ).fetchone()["c"]
+
+            ready_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND order_status IN ('ready', 'ready_for_pickup');",
+                (rid,),
+            ).fetchone()["c"]
+
+            rejected_orders = conn.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND order_status IN ('rejected', 'cancelled');",
+                (rid,),
+            ).fetchone()["c"]
+
+            menu_items_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM menu_items WHERE restaurant_id = ?;",
+                (rid,),
+            ).fetchone()["c"]
+
+        return _ok(request_id, {
+            "seller": {
+                "user_id": user["user_id"],
+                "name": user["name"],
+                "email": user["email"],
+                "role": user["role"],
+            },
+            "restaurant": {
+                "restaurant_id": restaurant["restaurant_id"],
+                "name": restaurant["name"],
+                "description": restaurant["description"],
+                "approval_status": restaurant["approval_status"],
+                "is_open": bool(restaurant["is_open"]),
+            },
+            "stats": {
+                "total_orders": total_orders,
+                "pending_orders": pending_orders,
+                "accepted_orders": accepted_orders,
+                "preparing_orders": preparing_orders,
+                "ready_orders": ready_orders,
+                "rejected_orders": rejected_orders,
+                "menu_items_count": menu_items_count,
+            },
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error fetching seller profile: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: get_seller_orders (V3)
+# -------------------------------------------------------------------
+def _handle_get_seller_orders(request_id: str, payload: dict) -> dict:
+    """
+    Return orders belonging exclusively to the seller's restaurant, with optional filter.
+    """
+    seller_id = payload.get("seller_id")
+    status_filter = payload.get("status")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            rid = restaurant["restaurant_id"]
+
+            query = """
+                SELECT o.order_id, o.customer_id, u.name AS customer_name,
+                       o.restaurant_id, r.name AS restaurant_name,
+                       o.total_amount, o.order_status, o.payment_status, o.created_at
+                FROM orders o
+                JOIN users u ON o.customer_id = u.user_id
+                JOIN restaurants r ON o.restaurant_id = r.restaurant_id
+                WHERE o.restaurant_id = ?
+            """
+            params: list[object] = [rid]
+
+            if status_filter and isinstance(status_filter, str):
+                s = status_filter.strip().lower()
+                if s == "pending":
+                    query += " AND o.order_status IN ('placed', 'pending')"
+                elif s == "accepted":
+                    query += " AND o.order_status = 'accepted'"
+                elif s == "preparing":
+                    query += " AND o.order_status = 'preparing'"
+                elif s in ("ready", "ready_for_pickup"):
+                    query += " AND o.order_status IN ('ready', 'ready_for_pickup')"
+                elif s in ("rejected", "cancelled"):
+                    query += " AND o.order_status IN ('rejected', 'cancelled')"
+                elif s != "all":
+                    query += " AND o.order_status = ?"
+                    params.append(s)
+
+            query += " ORDER BY o.order_id DESC;"
+
+            order_rows = conn.execute(query, tuple(params)).fetchall()
+
+            orders = []
+            for ord_row in order_rows:
+                oid = ord_row["order_id"]
+                item_rows = conn.execute(
+                    """
+                    SELECT oi.order_item_id, oi.item_id, mi.name, oi.quantity, oi.unit_price,
+                           ROUND(oi.quantity * oi.unit_price, 2) AS subtotal
+                    FROM order_items oi
+                    JOIN menu_items mi ON oi.item_id = mi.item_id
+                    WHERE oi.order_id = ?
+                    ORDER BY oi.order_item_id;
+                    """,
+                    (oid,),
+                ).fetchall()
+
+                payment_row = conn.execute(
+                    """
+                    SELECT payment_id, payment_status, transaction_ref, amount, created_at
+                    FROM payments
+                    WHERE order_id = ?;
+                    """,
+                    (oid,),
+                ).fetchone()
+
+                payment_info = None
+                if payment_row:
+                    payment_info = {
+                        "payment_id": payment_row["payment_id"],
+                        "payment_status": payment_row["payment_status"],
+                        "transaction_ref": payment_row["transaction_ref"],
+                        "amount": float(payment_row["amount"]),
+                        "created_at": payment_row["created_at"],
+                    }
+
+                orders.append({
+                    "order_id": ord_row["order_id"],
+                    "customer_id": ord_row["customer_id"],
+                    "customer_name": ord_row["customer_name"],
+                    "restaurant_id": ord_row["restaurant_id"],
+                    "restaurant_name": ord_row["restaurant_name"],
+                    "total_amount": float(ord_row["total_amount"]),
+                    "order_status": ord_row["order_status"],
+                    "payment_status": ord_row["payment_status"],
+                    "created_at": ord_row["created_at"],
+                    "items": [
+                        {
+                            "item_id": it["item_id"],
+                            "name": it["name"],
+                            "quantity": it["quantity"],
+                            "unit_price": it["unit_price"],
+                            "subtotal": it["subtotal"],
+                        }
+                        for it in item_rows
+                    ],
+                    "payment": payment_info,
+                })
+
+        return _ok(request_id, orders)
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error fetching seller orders: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: get_seller_order (V3)
+# -------------------------------------------------------------------
+def _handle_get_seller_order(request_id: str, payload: dict) -> dict:
+    """
+    Retrieve single order detail with seller ownership authorization.
+    """
+    seller_id = payload.get("seller_id")
+    order_id = payload.get("order_id")
+
+    if order_id is None:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'order_id'.")
+    if not isinstance(order_id, int) or isinstance(order_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'order_id' must be an integer.")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            ord_row = conn.execute(
+                """
+                SELECT o.order_id, o.customer_id, u.name AS customer_name,
+                       o.restaurant_id, r.name AS restaurant_name,
+                       o.total_amount, o.order_status, o.payment_status, o.created_at
+                FROM orders o
+                JOIN users u ON o.customer_id = u.user_id
+                JOIN restaurants r ON o.restaurant_id = r.restaurant_id
+                WHERE o.order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            if ord_row is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No order found with id {order_id}.")
+
+            if ord_row["restaurant_id"] != restaurant["restaurant_id"]:
+                return _err(
+                    request_id,
+                    ERR_FORBIDDEN,
+                    f"Access denied: order {order_id} does not belong to your restaurant.",
+                )
+
+            item_rows = conn.execute(
+                """
+                SELECT oi.order_item_id, oi.item_id, mi.name, oi.quantity, oi.unit_price,
+                       ROUND(oi.quantity * oi.unit_price, 2) AS subtotal
+                FROM order_items oi
+                JOIN menu_items mi ON oi.item_id = mi.item_id
+                WHERE oi.order_id = ?
+                ORDER BY oi.order_item_id;
+                """,
+                (order_id,),
+            ).fetchall()
+
+            payment_row = conn.execute(
+                """
+                SELECT payment_id, payment_status, transaction_ref, amount, created_at
+                FROM payments
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            payment_info = None
+            if payment_row:
+                payment_info = {
+                    "payment_id": payment_row["payment_id"],
+                    "payment_status": payment_row["payment_status"],
+                    "transaction_ref": payment_row["transaction_ref"],
+                    "amount": float(payment_row["amount"]),
+                    "created_at": payment_row["created_at"],
+                }
+
+        return _ok(request_id, {
+            "order_id": ord_row["order_id"],
+            "customer_id": ord_row["customer_id"],
+            "customer_name": ord_row["customer_name"],
+            "restaurant_id": ord_row["restaurant_id"],
+            "restaurant_name": ord_row["restaurant_name"],
+            "total_amount": float(ord_row["total_amount"]),
+            "order_status": ord_row["order_status"],
+            "payment_status": ord_row["payment_status"],
+            "created_at": ord_row["created_at"],
+            "items": [
+                {
+                    "item_id": it["item_id"],
+                    "name": it["name"],
+                    "quantity": it["quantity"],
+                    "unit_price": it["unit_price"],
+                    "subtotal": it["subtotal"],
+                }
+                for it in item_rows
+            ],
+            "payment": payment_info,
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error fetching seller order: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: update_order_status (V3)
+# -------------------------------------------------------------------
+def _handle_update_order_status(request_id: str, payload: dict) -> dict:
+    """
+    Validate status transition and update order status for seller's restaurant.
+    """
+    seller_id = payload.get("seller_id")
+    order_id = payload.get("order_id")
+    raw_status = payload.get("status")
+
+    if order_id is None:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'order_id'.")
+    if not isinstance(order_id, int) or isinstance(order_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'order_id' must be an integer.")
+
+    if not raw_status or not isinstance(raw_status, str):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'status' must be a non-empty string.")
+
+    target_status = raw_status.strip().lower()
+
+    # Normalise aliases
+    if target_status == "ready":
+        target_status = "ready_for_pickup"
+    elif target_status == "cancel":
+        target_status = "cancelled"
+
+    allowed_targets = {"accepted", "preparing", "ready_for_pickup", "rejected", "cancelled"}
+    if target_status not in allowed_targets:
+        return _err(
+            request_id,
+            ERR_INVALID_PAYLOAD,
+            f"Invalid target status '{raw_status}'. Allowed: {sorted(allowed_targets)}.",
+        )
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            ord_row = conn.execute(
+                "SELECT order_id, restaurant_id, order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+
+            if ord_row is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No order found with id {order_id}.")
+
+            if ord_row["restaurant_id"] != restaurant["restaurant_id"]:
+                return _err(
+                    request_id,
+                    ERR_FORBIDDEN,
+                    f"Access denied: order {order_id} does not belong to your restaurant.",
+                )
+
+            cur_status = ord_row["order_status"]
+
+            # --- State Machine Transition Guards ---
+            if cur_status in ("rejected", "cancelled"):
+                return _err(
+                    request_id,
+                    ERR_INVALID_TRANSITION,
+                    f"Cannot update order {order_id}: order is already {cur_status}.",
+                )
+
+            if cur_status in ("ready_for_pickup", "ready", "out_for_delivery", "delivered"):
+                return _err(
+                    request_id,
+                    ERR_INVALID_TRANSITION,
+                    f"Cannot update order {order_id}: order is already completed ({cur_status}).",
+                )
+
+            if target_status == "accepted":
+                if cur_status in ("placed", "pending"):
+                    pass  # Allowed
+                elif cur_status == "accepted":
+                    pass  # Idempotent
+                else:
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Cannot accept order {order_id} from current status '{cur_status}'.",
+                    )
+
+            elif target_status in ("rejected", "cancelled"):
+                if cur_status in ("placed", "pending", "accepted"):
+                    pass  # Allowed
+                elif cur_status == "preparing":
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Cannot reject order {order_id} while it is currently being prepared.",
+                    )
+                else:
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Cannot reject order {order_id} from status '{cur_status}'.",
+                    )
+
+            elif target_status == "preparing":
+                if cur_status == "accepted":
+                    pass  # Allowed
+                elif cur_status in ("placed", "pending"):
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Order {order_id} must be accepted before preparation can start.",
+                    )
+                elif cur_status == "preparing":
+                    pass  # Idempotent
+                else:
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Cannot start preparation for order {order_id} from status '{cur_status}'.",
+                    )
+
+            elif target_status == "ready_for_pickup":
+                if cur_status == "preparing":
+                    pass  # Allowed
+                elif cur_status in ("ready_for_pickup", "ready"):
+                    pass  # Idempotent
+                else:
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Order {order_id} must be in 'preparing' status before marking ready for pickup.",
+                    )
+
+            # Persist status change
+            conn.execute(
+                "UPDATE orders SET order_status = ? WHERE order_id = ?;",
+                (target_status, order_id),
+            )
+
+        return _ok(request_id, {
+            "order_id": order_id,
+            "previous_status": cur_status,
+            "order_status": target_status,
+            "message": f"Order #{order_id} status successfully updated to {target_status}.",
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error updating order status: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: get_seller_menu (V3)
+# -------------------------------------------------------------------
+def _handle_get_seller_menu(request_id: str, payload: dict) -> dict:
+    """
+    Return menu items belonging exclusively to the seller's restaurant.
+    """
+    seller_id = payload.get("seller_id")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            rid = restaurant["restaurant_id"]
+
+            items = conn.execute(
+                """
+                SELECT item_id, restaurant_id, name, description, price, is_available
+                FROM menu_items
+                WHERE restaurant_id = ?
+                ORDER BY item_id;
+                """,
+                (rid,),
+            ).fetchall()
+
+        return _ok(request_id, [
+            {
+                "item_id": it["item_id"],
+                "restaurant_id": it["restaurant_id"],
+                "name": it["name"],
+                "description": it["description"] or "",
+                "price": float(it["price"]),
+                "is_available": int(it["is_available"]),
+            }
+            for it in items
+        ])
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error fetching seller menu: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: add_menu_item (V3)
+# -------------------------------------------------------------------
+def _handle_add_menu_item(request_id: str, payload: dict) -> dict:
+    """
+    Add a new menu item to the seller's restaurant.
+    """
+    seller_id = payload.get("seller_id")
+    name = payload.get("name")
+    description = payload.get("description", "")
+    price = payload.get("price")
+    is_available = payload.get("is_available", 1)
+
+    if not name or not isinstance(name, str) or not name.strip():
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'name' is required and cannot be empty.")
+
+    if price is None or not isinstance(price, (int, float)) or isinstance(price, bool) or price <= 0:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'price' must be a positive number greater than 0.")
+
+    if not isinstance(description, str):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'description' must be a string.")
+
+    if is_available in (True, 1, "1"):
+        avail_int = 1
+    elif is_available in (False, 0, "0"):
+        avail_int = 0
+    else:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'is_available' must be 1 or 0.")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            rid = restaurant["restaurant_id"]
+
+            cursor = conn.execute(
+                """
+                INSERT INTO menu_items (restaurant_id, name, description, price, is_available)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (rid, name.strip(), description.strip(), float(price), avail_int),
+            )
+            item_id = cursor.lastrowid
+
+        return _ok(request_id, {
+            "item_id": item_id,
+            "restaurant_id": rid,
+            "name": name.strip(),
+            "description": description.strip(),
+            "price": float(price),
+            "is_available": avail_int,
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error adding menu item: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: update_menu_item (V3)
+# -------------------------------------------------------------------
+def _handle_update_menu_item(request_id: str, payload: dict) -> dict:
+    """
+    Update an existing menu item (name, price, description, is_available).
+    Preserves historical price snapshots on existing orders.
+    """
+    seller_id = payload.get("seller_id")
+    item_id = payload.get("item_id")
+
+    if item_id is None:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'item_id'.")
+    if not isinstance(item_id, int) or isinstance(item_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'item_id' must be an integer.")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            item = conn.execute(
+                "SELECT item_id, restaurant_id, name, description, price, is_available FROM menu_items WHERE item_id = ?;",
+                (item_id,),
+            ).fetchone()
+
+            if item is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No menu item found with id {item_id}.")
+
+            if item["restaurant_id"] != restaurant["restaurant_id"]:
+                return _err(
+                    request_id,
+                    ERR_FORBIDDEN,
+                    f"Access denied: menu item {item_id} does not belong to your restaurant.",
+                )
+
+            new_name = item["name"]
+            new_desc = item["description"] or ""
+            new_price = item["price"]
+            new_avail = item["is_available"]
+
+            if "name" in payload:
+                n = payload["name"]
+                if not n or not isinstance(n, str) or not n.strip():
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'name' cannot be empty.")
+                new_name = n.strip()
+
+            if "description" in payload:
+                d = payload["description"]
+                if not isinstance(d, str):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'description' must be a string.")
+                new_desc = d.strip()
+
+            if "price" in payload:
+                p = payload["price"]
+                if not isinstance(p, (int, float)) or isinstance(p, bool) or p <= 0:
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'price' must be a positive number greater than 0.")
+                new_price = float(p)
+
+            if "is_available" in payload:
+                a = payload["is_available"]
+                if a in (True, 1, "1"):
+                    new_avail = 1
+                elif a in (False, 0, "0"):
+                    new_avail = 0
+                else:
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'is_available' must be 1 or 0.")
+
+            conn.execute(
+                """
+                UPDATE menu_items
+                SET name = ?, description = ?, price = ?, is_available = ?
+                WHERE item_id = ?;
+                """,
+                (new_name, new_desc, new_price, new_avail, item_id),
+            )
+
+        return _ok(request_id, {
+            "item_id": item_id,
+            "restaurant_id": restaurant["restaurant_id"],
+            "name": new_name,
+            "description": new_desc,
+            "price": new_price,
+            "is_available": new_avail,
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error updating menu item: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: update_menu_item_availability (V3)
+# -------------------------------------------------------------------
+def _handle_update_menu_item_availability(request_id: str, payload: dict) -> dict:
+    """
+    Toggle availability of a menu item belonging to the seller's restaurant.
+    """
+    seller_id = payload.get("seller_id")
+    item_id = payload.get("item_id")
+    is_available = payload.get("is_available")
+
+    if item_id is None:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'item_id'.")
+    if not isinstance(item_id, int) or isinstance(item_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'item_id' must be an integer.")
+
+    if is_available in (True, 1, "1"):
+        avail_int = 1
+    elif is_available in (False, 0, "0"):
+        avail_int = 0
+    else:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'is_available' must be 1 or 0.")
+
+    try:
+        with get_connection() as conn:
+            restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+            if err:
+                return err
+
+            item = conn.execute(
+                "SELECT item_id, restaurant_id, name, description, price, is_available FROM menu_items WHERE item_id = ?;",
+                (item_id,),
+            ).fetchone()
+
+            if item is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No menu item found with id {item_id}.")
+
+            if item["restaurant_id"] != restaurant["restaurant_id"]:
+                return _err(
+                    request_id,
+                    ERR_FORBIDDEN,
+                    f"Access denied: menu item {item_id} does not belong to your restaurant.",
+                )
+
+            conn.execute(
+                "UPDATE menu_items SET is_available = ? WHERE item_id = ?;",
+                (avail_int, item_id),
+            )
+
+        return _ok(request_id, {
+            "item_id": item_id,
+            "restaurant_id": restaurant["restaurant_id"],
+            "name": item["name"],
+            "is_available": avail_int,
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error updating item availability: {exc}")
+
+
+# -------------------------------------------------------------------
 # Dispatch table — maps action name → handler function
 # -------------------------------------------------------------------
 _HANDLERS = {
-    "ping":              _handle_ping,
-    "list_restaurants":  _handle_list_restaurants,
-    "list_menu":         _handle_list_menu,
-    "create_order":      _handle_create_order,
-    "simulate_payment":  _handle_simulate_payment,
-    "get_order":         _handle_get_order,
-    "get_order_history": _handle_get_order_history,
+    "ping":                          _handle_ping,
+    "list_restaurants":              _handle_list_restaurants,
+    "list_menu":                     _handle_list_menu,
+    "create_order":                  _handle_create_order,
+    "simulate_payment":              _handle_simulate_payment,
+    "get_order":                     _handle_get_order,
+    "get_order_history":             _handle_get_order_history,
+    "get_seller_profile":            _handle_get_seller_profile,
+    "get_seller_restaurant":         _handle_get_seller_profile,
+    "get_seller_orders":             _handle_get_seller_orders,
+    "get_seller_order":              _handle_get_seller_order,
+    "update_order_status":           _handle_update_order_status,
+    "get_seller_menu":               _handle_get_seller_menu,
+    "add_menu_item":                 _handle_add_menu_item,
+    "update_menu_item":              _handle_update_menu_item,
+    "update_menu_item_availability": _handle_update_menu_item_availability,
 }
 
 

@@ -787,7 +787,7 @@
         </div>
         <div class="receipt-row">
           <span class="text-muted">Order Status:</span>
-          <span class="info-status status-accepted">${escapeHtml(order.order_status)}</span>
+          <span class="info-status ${getOrderStatusClass(order.order_status)}">${escapeHtml(order.order_status)}</span>
         </div>
         <div class="receipt-row">
           <span class="text-muted">Payment Status:</span>
@@ -860,6 +860,16 @@
     }
   }
 
+  function getOrderStatusClass(status) {
+    const s = String(status || "").toLowerCase();
+    if (s === "accepted") return "status-accepted";
+    if (s === "preparing") return "status-preparing";
+    if (s === "ready" || s === "ready_for_pickup") return "status-ready";
+    if (s === "placed" || s === "pending") return "status-placed";
+    if (s === "rejected" || s === "cancelled") return "status-rejected";
+    return "status-placed";
+  }
+
   function renderOrderHistory(orders) {
     if (!orders.length) {
       elements.ordersHistoryList.innerHTML = `
@@ -875,8 +885,7 @@
 
     elements.ordersHistoryList.innerHTML = orders
       .map((ord) => {
-        const isPaid = ord.payment_status === "paid";
-        const statusClass = isPaid ? "status-accepted" : ord.payment_status === "failed" ? "status-failed" : "status-placed";
+        const statusClass = getOrderStatusClass(ord.order_status);
 
         return `
           <div class="order-history-card">

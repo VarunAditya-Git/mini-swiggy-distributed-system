@@ -61,11 +61,53 @@ def get_connection() -> sqlite3.Connection:
 # -------------------------------------------------------------------
 # Schema initialisation
 # -------------------------------------------------------------------
+def migrate_db() -> None:
+    """
+    Ensure existing tables have V3 constraints (e.g. order_status check constraint
+    including 'ready_for_pickup' and 'rejected'). Safe and idempotent.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='orders';"
+        ).fetchone()
+        if row and row["sql"] and "ready_for_pickup" not in row["sql"]:
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS orders_v3 (
+                    order_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_id    INTEGER NOT NULL
+                                     REFERENCES users(user_id)
+                                     ON DELETE RESTRICT,
+                    restaurant_id  INTEGER NOT NULL
+                                     REFERENCES restaurants(restaurant_id)
+                                     ON DELETE RESTRICT,
+                    total_amount   REAL    NOT NULL CHECK (total_amount >= 0),
+                    order_status   TEXT    NOT NULL DEFAULT 'placed'
+                                     CHECK (order_status IN (
+                                         'placed', 'accepted', 'preparing',
+                                         'ready', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'cancelled', 'rejected'
+                                     )),
+                    payment_status TEXT    NOT NULL DEFAULT 'pending'
+                                     CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')),
+                    created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            conn.execute("""
+                INSERT INTO orders_v3 (order_id, customer_id, restaurant_id, total_amount, order_status, payment_status, created_at)
+                SELECT order_id, customer_id, restaurant_id, total_amount, order_status, payment_status, created_at
+                FROM orders;
+            """)
+            conn.execute("DROP TABLE orders;")
+            conn.execute("ALTER TABLE orders_v3 RENAME TO orders;")
+            conn.execute("PRAGMA foreign_keys = ON;")
+            print("[db] Migrated orders table to V3 schema.")
+
+
 def init_db() -> None:
     """
     Read schema.sql and execute it against swiggy.db.
 
-    All CREATE TABLE statements use  IF NOT EXISTS,  so running
+    All CREATE TABLE statements use IF NOT EXISTS, so running
     init_db() more than once is safe – it will not drop existing data.
     """
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
@@ -75,6 +117,7 @@ def init_db() -> None:
         # It also implicitly commits any open transaction first.
         conn.executescript(schema_sql)
 
+    migrate_db()
     print(f"[db] Database initialised -> {DB_PATH}")
 
 

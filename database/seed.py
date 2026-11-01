@@ -53,6 +53,7 @@ SAMPLE_RESTAURANTS = [
         "name": "Hyderabad Spice House",
         "description": "Authentic Hyderabadi cuisine – famous for Dum Biryani.",
         "approval_status": "approved",
+        "owner_email": "bob@example.com",  # Bob Seller (ID: 2) development seller identity
         "menu": [
             {
                 "name": "Chicken Biryani",
@@ -115,29 +116,44 @@ def _seed_restaurant(conn: object, restaurant: dict) -> None:
         conn: An open sqlite3 connection.
         restaurant: A dict matching SAMPLE_RESTAURANTS format.
     """
+    owner_user_id = restaurant.get("owner_user_id")
+    if not owner_user_id and restaurant.get("owner_email"):
+        user_row = conn.execute(
+            "SELECT user_id FROM users WHERE email = ?;",
+            (restaurant["owner_email"],),
+        ).fetchone()
+        if user_row:
+            owner_user_id = user_row["user_id"]
+
     # Check if this restaurant already exists (match by name).
     existing = conn.execute(
-        "SELECT restaurant_id FROM restaurants WHERE name = ?;",
+        "SELECT restaurant_id, owner_user_id FROM restaurants WHERE name = ?;",
         (restaurant["name"],),
     ).fetchone()
 
     if existing:
         restaurant_id = existing["restaurant_id"]
+        if owner_user_id and not existing["owner_user_id"]:
+            conn.execute(
+                "UPDATE restaurants SET owner_user_id = ? WHERE restaurant_id = ?;",
+                (owner_user_id, restaurant_id),
+            )
         print(f"  [seed] Restaurant already exists: '{restaurant['name']}' (id={restaurant_id})")
     else:
         cursor = conn.execute(
             """
-            INSERT INTO restaurants (name, description, approval_status)
-            VALUES (?, ?, ?);
+            INSERT INTO restaurants (name, description, approval_status, owner_user_id)
+            VALUES (?, ?, ?, ?);
             """,
             (
                 restaurant["name"],
                 restaurant["description"],
                 restaurant["approval_status"],
+                owner_user_id,
             ),
         )
         restaurant_id = cursor.lastrowid
-        print(f"  [seed] Inserted restaurant: '{restaurant['name']}' (id={restaurant_id})")
+        print(f"  [seed] Inserted restaurant: '{restaurant['name']}' (id={restaurant_id}, owner={owner_user_id})")
 
     # Seed menu items for this restaurant.
     for item in restaurant["menu"]:

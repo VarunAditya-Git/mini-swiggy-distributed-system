@@ -1,8 +1,8 @@
 # Mini Swiggy — Distributed Food Delivery System
 
-> **Current branch: `feature/web-customer-interface`**  
-> V0 (database), V1 (TCP client-server), and V2 (core food ordering) have been merged into `main`.  
-> This branch implements the **Customer Web Interface** and lightweight **HTTP API Gateway**.
+> **Current branch: `feature/v3-seller-dashboard`**  
+> V0 (database), V1 (TCP client-server), V2 (core food ordering), and Customer Web Interface are merged into `main`.  
+> This branch implements **V3 — Seller Dashboard and Restaurant Management System**.
 
 ---
 
@@ -15,8 +15,8 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | **V0** | Merged to `main` | Database foundation · SQLite schema (8 tables) · Seed data · 11 tests |
 | **V1** | Merged to `main` | Raw TCP sockets · Newline-delimited JSON framing · Read-only actions · 42 tests |
 | **V2** | Merged to `main` | Core Food Ordering · Atomic transactions · Price snapshots · Simulated payments · Order history · 41 tests |
-| **Web Extension (this branch)** | Complete | **Customer Web Interface & HTTP Gateway** · Modern web UI · REST API bridge · Single-restaurant cart · Receipt viewer · 18 new tests (112 total) |
-| **V3** (planned) | Next | Concurrency & Worker thread pools for simultaneous clients |
+| **Web Extension** | Merged to `main` | Customer Web Interface & HTTP Gateway · Modern web UI · REST API bridge · Single-restaurant cart · Receipt viewer · 18 tests |
+| **V3** | **Complete** | **Seller Dashboard & Restaurant Management System** · Multi-tenant kitchen management · Order lifecycle state machine · Real-time menu management & availability · 52 new tests (**164 total**) |
 | **V4** (planned) | Future | Independent networked microservices (Restaurant, Ordering, Payment, Delivery) |
 | **V5+** (planned) | Future | Asynchronous messaging, caching, fault tolerance, and consensus |
 
@@ -30,9 +30,9 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | Networking | `socket` (stdlib) | Raw TCP transport and low-level stream framing |
 | Serialization | `json` (stdlib) | Newline-delimited JSON (NDJSON) protocol |
 | Web Gateway | `http.server` (stdlib) | Non-blocking ThreadingHTTPServer bridging HTTP to TCP |
-| Frontend | Vanilla HTML5, CSS3, JS | Modern, responsive Indian food-delivery interface |
+| Frontend | Vanilla HTML5, CSS3, JS | Modern, responsive Indian food-delivery & kitchen partner interfaces |
 | Storage | SQLite (`sqlite3` stdlib) | Relational persistence with foreign keys and ACID transactions |
-| Testing | `pytest` | Comprehensive unit and real TCP integration testing (112 automated tests) |
+| Testing | `pytest` | Comprehensive unit and real TCP integration testing (**164 automated tests**) |
 
 ---
 
@@ -46,33 +46,37 @@ MiniSwiggy/
 │
 ├── database/
 │   ├── __init__.py
-│   ├── db.py                     ← Connection factory with PRAGMA foreign_keys = ON
-│   ├── schema.sql                ← 8 relational tables (users, restaurants, menu_items, orders, order_items, payments, etc.)
-│   └── seed.py                   ← Idempotent seed script (3 restaurants, 6 menu items, 4 users)
+│   ├── db.py                     ← Connection factory with PRAGMA foreign_keys = ON & migrate_db()
+│   ├── schema.sql                ← 8 relational tables with expanded V3 order_status lifecycle
+│   └── seed.py                   ← Idempotent seed script (Hyderabad Spice House assigned to Bob Seller ID: 2)
 │
 ├── server/
 │   ├── __init__.py
 │   ├── tcp_server.py             ← Raw TCP server handling NDJSON framing and timeouts
-│   └── request_handler.py        ← Application logic: validation, price calculation, atomic DB transactions
+│   └── request_handler.py        ← Application logic: validation, zero-trust pricing, seller RBAC, lifecycle state machine
 │
 ├── clients/
 │   ├── __init__.py
-│   └── tcp_client.py            ← Reusable SwiggyClient class and interactive CLI demo
+│   └── tcp_client.py            ← Reusable SwiggyClient with V1, V2, and V3 seller methods
 │
 ├── gateway/
 │   ├── __init__.py
-│   └── http_gateway.py          ← Lightweight HTTP gateway translating HTTP to TCP NDJSON
+│   └── http_gateway.py          ← HTTP gateway translating REST GET/POST/PATCH to TCP NDJSON
 │
 ├── web/
-│   ├── index.html               ← Responsive customer food ordering web interface
-│   ├── styles.css               ← Modern Swiggy-inspired visual design
-│   └── app.js                   ← Client application logic & safe DOM rendering
+│   ├── index.html               ← Customer food ordering storefront
+│   ├── styles.css               ← Swiggy-inspired visual design system
+│   ├── app.js                   ← Customer client application logic & status rendering
+│   ├── seller.html              ← Dedicated Restaurant Seller Dashboard (KDS)
+│   ├── seller.css               ← Dark-themed kitchen partner stylesheet
+│   └── seller.js                ← Seller client application logic & state transitions
 │
 ├── docs/
 │   ├── ARCHITECTURE.md           ← Architecture & schema relationship reference
 │   ├── V1_TCP_PROTOCOL.md       ← V1 TCP protocol specification
-│   ├── V2_PROTOCOL.md           ← Complete V2 protocol reference (all 7 actions, payloads, state machines)
-│   └── WEB_INTERFACE.md         ← Web interface architecture, gateway translation, run instructions
+│   ├── V2_PROTOCOL.md           ← Complete V2 protocol reference
+│   ├── WEB_INTERFACE.md         ← Customer web interface and gateway documentation
+│   └── V3_SELLER_DASHBOARD.md   ← Complete V3 Seller Dashboard and Kitchen Management specification
 │
 └── tests/
     ├── test_schema.py            ← V0: 11 database schema constraint & seed tests
@@ -80,7 +84,10 @@ MiniSwiggy/
     ├── test_tcp_server.py        ← V1: 19 real TCP socket integration tests
     ├── test_v2_order_handler.py  ← V2: 31 unit tests for ordering, payment, rollback, and snapshots
     ├── test_v2_tcp.py            ← V2: 10 real TCP socket integration tests for V2 ordering flows
-    └── test_web_gateway.py       ← Web: 18 unit & integration tests for gateway and security guards
+    ├── test_web_gateway.py       ← Web: 18 unit & integration tests for gateway and security guards
+    ├── test_v3_seller_handler.py ← V3: 34 unit tests for seller auth, order transitions, menu CRUD
+    ├── test_v3_tcp.py            ← V3: 5 integration tests for seller operations over raw TCP
+    └── test_v3_gateway.py        ← V3: 13 integration tests for seller REST API endpoints & static routing
 ```
 
 ---

@@ -209,6 +209,60 @@ class SwiggyClient:
         """Retrieve full order history for a customer."""
         return self.send("get_order_history", {"customer_id": customer_id})
 
+    # ---------------------------------------------------------------
+    # V3 Seller Dashboard operations
+    # ---------------------------------------------------------------
+    def get_seller_profile(self, seller_id: int) -> dict:
+        """Retrieve seller profile, restaurant info, and dashboard stats."""
+        return self.send("get_seller_profile", {"seller_id": seller_id})
+
+    def get_seller_orders(self, seller_id: int, status: str = "") -> dict:
+        """Retrieve orders belonging to seller's restaurant with optional status filter."""
+        payload = {"seller_id": seller_id}
+        if status:
+            payload["status"] = status
+        return self.send("get_seller_orders", payload)
+
+    def get_seller_order(self, seller_id: int, order_id: int) -> dict:
+        """Retrieve specific order details with seller authorization."""
+        return self.send("get_seller_order", {"seller_id": seller_id, "order_id": order_id})
+
+    def update_order_status(self, seller_id: int, order_id: int, status: str) -> dict:
+        """Advance or reject order lifecycle status."""
+        return self.send("update_order_status", {
+            "seller_id": seller_id,
+            "order_id": order_id,
+            "status": status,
+        })
+
+    def get_seller_menu(self, seller_id: int) -> dict:
+        """Retrieve menu items belonging to seller's restaurant."""
+        return self.send("get_seller_menu", {"seller_id": seller_id})
+
+    def add_menu_item(self, seller_id: int, name: str, price: float, description: str = "", is_available: int = 1) -> dict:
+        """Add a new menu item to seller's restaurant."""
+        return self.send("add_menu_item", {
+            "seller_id": seller_id,
+            "name": name,
+            "price": price,
+            "description": description,
+            "is_available": is_available,
+        })
+
+    def update_menu_item(self, seller_id: int, item_id: int, **fields) -> dict:
+        """Update fields of an existing menu item."""
+        payload = {"seller_id": seller_id, "item_id": item_id}
+        payload.update(fields)
+        return self.send("update_menu_item", payload)
+
+    def update_menu_item_availability(self, seller_id: int, item_id: int, is_available: int) -> dict:
+        """Toggle availability of a menu item."""
+        return self.send("update_menu_item_availability", {
+            "seller_id": seller_id,
+            "item_id": item_id,
+            "is_available": is_available,
+        })
+
     def _read_response(self) -> dict:
         """
         Read bytes from the socket until a complete newline-terminated

@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_status   TEXT    NOT NULL DEFAULT 'placed'
                      CHECK (order_status IN (
                          'placed', 'accepted', 'preparing',
-                         'ready', 'out_for_delivery', 'delivered', 'cancelled'
+                         'ready', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'cancelled', 'rejected'
                      )),
     payment_status TEXT    NOT NULL DEFAULT 'pending'
                      CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')),
