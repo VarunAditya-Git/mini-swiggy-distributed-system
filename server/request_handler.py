@@ -37,6 +37,9 @@ ERR_PAYMENT_ALREADY_COMPLETED = "PAYMENT_ALREADY_COMPLETED"
 ERR_UNAUTHORIZED_ROLE         = "UNAUTHORIZED_ROLE"
 ERR_FORBIDDEN                 = "FORBIDDEN"
 ERR_INVALID_TRANSITION        = "INVALID_TRANSITION"
+ERR_REFUND_NOT_FOUND          = "REFUND_NOT_FOUND"
+ERR_REFUND_ALREADY_PROCESSED  = "REFUND_ALREADY_PROCESSED"
+ERR_REFUND_NOT_RETRYABLE      = "REFUND_NOT_RETRYABLE"
 ERR_DB_ERROR                  = "DB_ERROR"
 
 
@@ -542,6 +545,30 @@ def _handle_get_order(request_id: str, payload: dict) -> dict:
                     "created_at": payment_row["created_at"],
                 }
 
+            refund_row = conn.execute(
+                """
+                SELECT refund_id, order_id, amount, refund_status, reason,
+                       transaction_ref, attempt_count, created_at, updated_at
+                FROM refunds
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            refund = None
+            if refund_row is not None:
+                refund = {
+                    "refund_id": refund_row["refund_id"],
+                    "order_id": refund_row["order_id"],
+                    "amount": float(refund_row["amount"]),
+                    "refund_status": refund_row["refund_status"],
+                    "reason": refund_row["reason"],
+                    "transaction_ref": refund_row["transaction_ref"],
+                    "attempt_count": refund_row["attempt_count"],
+                    "created_at": refund_row["created_at"],
+                    "updated_at": refund_row["updated_at"],
+                }
+
         return _ok(request_id, {
             "order_id": order["order_id"],
             "customer_id": order["customer_id"],
@@ -555,6 +582,7 @@ def _handle_get_order(request_id: str, payload: dict) -> dict:
             "created_at": order["created_at"],
             "items": items,
             "payment": payment,
+            "refund": refund,
         })
 
     except sqlite3.Error as exc:
@@ -611,6 +639,30 @@ def _handle_get_order_history(request_id: str, payload: dict) -> dict:
                     (oid,),
                 ).fetchall()
 
+                refund_row = conn.execute(
+                    """
+                    SELECT refund_id, order_id, amount, refund_status, reason,
+                           transaction_ref, attempt_count, created_at, updated_at
+                    FROM refunds
+                    WHERE order_id = ?;
+                    """,
+                    (oid,),
+                ).fetchone()
+
+                refund = None
+                if refund_row is not None:
+                    refund = {
+                        "refund_id": refund_row["refund_id"],
+                        "order_id": refund_row["order_id"],
+                        "amount": float(refund_row["amount"]),
+                        "refund_status": refund_row["refund_status"],
+                        "reason": refund_row["reason"],
+                        "transaction_ref": refund_row["transaction_ref"],
+                        "attempt_count": refund_row["attempt_count"],
+                        "created_at": refund_row["created_at"],
+                        "updated_at": refund_row["updated_at"],
+                    }
+
                 orders.append({
                     "order_id": ord_row["order_id"],
                     "customer_id": ord_row["customer_id"],
@@ -630,6 +682,7 @@ def _handle_get_order_history(request_id: str, payload: dict) -> dict:
                         }
                         for it in item_rows
                     ],
+                    "refund": refund,
                 })
 
         return _ok(request_id, orders)
@@ -858,6 +911,30 @@ def _handle_get_seller_orders(request_id: str, payload: dict) -> dict:
                         "created_at": payment_row["created_at"],
                     }
 
+                refund_row = conn.execute(
+                    """
+                    SELECT refund_id, order_id, amount, refund_status, reason,
+                           transaction_ref, attempt_count, created_at, updated_at
+                    FROM refunds
+                    WHERE order_id = ?;
+                    """,
+                    (oid,),
+                ).fetchone()
+
+                refund_info = None
+                if refund_row:
+                    refund_info = {
+                        "refund_id": refund_row["refund_id"],
+                        "order_id": refund_row["order_id"],
+                        "amount": float(refund_row["amount"]),
+                        "refund_status": refund_row["refund_status"],
+                        "reason": refund_row["reason"],
+                        "transaction_ref": refund_row["transaction_ref"],
+                        "attempt_count": refund_row["attempt_count"],
+                        "created_at": refund_row["created_at"],
+                        "updated_at": refund_row["updated_at"],
+                    }
+
                 orders.append({
                     "order_id": ord_row["order_id"],
                     "customer_id": ord_row["customer_id"],
@@ -879,6 +956,7 @@ def _handle_get_seller_orders(request_id: str, payload: dict) -> dict:
                         for it in item_rows
                     ],
                     "payment": payment_info,
+                    "refund": refund_info,
                 })
 
         return _ok(request_id, orders)
@@ -962,6 +1040,30 @@ def _handle_get_seller_order(request_id: str, payload: dict) -> dict:
                     "created_at": payment_row["created_at"],
                 }
 
+            refund_row = conn.execute(
+                """
+                SELECT refund_id, order_id, amount, refund_status, reason,
+                       transaction_ref, attempt_count, created_at, updated_at
+                FROM refunds
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            refund_info = None
+            if refund_row:
+                refund_info = {
+                    "refund_id": refund_row["refund_id"],
+                    "order_id": refund_row["order_id"],
+                    "amount": float(refund_row["amount"]),
+                    "refund_status": refund_row["refund_status"],
+                    "reason": refund_row["reason"],
+                    "transaction_ref": refund_row["transaction_ref"],
+                    "attempt_count": refund_row["attempt_count"],
+                    "created_at": refund_row["created_at"],
+                    "updated_at": refund_row["updated_at"],
+                }
+
         return _ok(request_id, {
             "order_id": ord_row["order_id"],
             "customer_id": ord_row["customer_id"],
@@ -983,6 +1085,7 @@ def _handle_get_seller_order(request_id: str, payload: dict) -> dict:
                 for it in item_rows
             ],
             "payment": payment_info,
+            "refund": refund_info,
         })
 
     except sqlite3.Error as exc:
@@ -1049,11 +1152,14 @@ def _handle_update_order_status(request_id: str, payload: dict) -> dict:
 
             # --- State Machine Transition Guards ---
             if cur_status in ("rejected", "cancelled"):
-                return _err(
-                    request_id,
-                    ERR_INVALID_TRANSITION,
-                    f"Cannot update order {order_id}: order is already {cur_status}.",
-                )
+                if cur_status == target_status:
+                    pass  # Idempotent re-rejection
+                else:
+                    return _err(
+                        request_id,
+                        ERR_INVALID_TRANSITION,
+                        f"Cannot update order {order_id}: order is already {cur_status}.",
+                    )
 
             if cur_status in ("ready_for_pickup", "ready", "out_for_delivery", "delivered"):
                 return _err(
@@ -1077,6 +1183,8 @@ def _handle_update_order_status(request_id: str, payload: dict) -> dict:
             elif target_status in ("rejected", "cancelled"):
                 if cur_status in ("placed", "pending", "accepted"):
                     pass  # Allowed
+                elif cur_status == target_status:
+                    pass  # Idempotent
                 elif cur_status == "preparing":
                     return _err(
                         request_id,
@@ -1126,12 +1234,73 @@ def _handle_update_order_status(request_id: str, payload: dict) -> dict:
                 (target_status, order_id),
             )
 
-        return _ok(request_id, {
+            # V3.2: Automated refund initiation when a paid order is rejected or cancelled
+            refund_data = None
+            if target_status in ("rejected", "cancelled"):
+                pay_row = conn.execute(
+                    "SELECT payment_id, amount, payment_status, transaction_ref FROM payments WHERE order_id = ?;",
+                    (order_id,),
+                ).fetchone()
+
+                if pay_row and pay_row["payment_status"] == "paid":
+                    # Check if refund record already exists (prevent duplicate creation)
+                    existing_ref = conn.execute(
+                        """
+                        SELECT refund_id, order_id, amount, refund_status, reason,
+                               transaction_ref, attempt_count, created_at, updated_at
+                        FROM refunds
+                        WHERE order_id = ?;
+                        """,
+                        (order_id,),
+                    ).fetchone()
+
+                    if existing_ref:
+                        refund_data = {
+                            "refund_id": existing_ref["refund_id"],
+                            "order_id": existing_ref["order_id"],
+                            "amount": float(existing_ref["amount"]),
+                            "refund_status": existing_ref["refund_status"],
+                            "reason": existing_ref["reason"],
+                            "transaction_ref": existing_ref["transaction_ref"],
+                            "attempt_count": existing_ref["attempt_count"],
+                            "created_at": existing_ref["created_at"],
+                            "updated_at": existing_ref["updated_at"],
+                        }
+                    else:
+                        paid_amount = float(pay_row["amount"])
+                        reason = str(payload.get("reason", "")).strip() or f"Order #{order_id} {target_status} by seller."
+                        sim_failure = bool(payload.get("simulate_refund_failure", False))
+
+                        ref_status = "failed" if sim_failure else "refunded"
+                        ref_txn = f"REF-SIM-{order_id}-{uuid.uuid4().hex[:8].upper()}"
+
+                        conn.execute(
+                            """
+                            INSERT INTO refunds (order_id, amount, refund_status, reason, transaction_ref, attempt_count)
+                            VALUES (?, ?, ?, ?, ?, 1);
+                            """,
+                            (order_id, paid_amount, ref_status, reason, ref_txn),
+                        )
+                        ref_id = conn.execute("SELECT last_insert_rowid() AS id;").fetchone()["id"]
+                        refund_data = {
+                            "refund_id": ref_id,
+                            "order_id": order_id,
+                            "amount": paid_amount,
+                            "refund_status": ref_status,
+                            "reason": reason,
+                            "transaction_ref": ref_txn,
+                            "attempt_count": 1,
+                        }
+
+        resp_data = {
             "order_id": order_id,
             "previous_status": cur_status,
             "order_status": target_status,
+            "payment_status": ord_row["payment_status"],
+            "refund": refund_data,
             "message": f"Order #{order_id} status successfully updated to {target_status}.",
-        })
+        }
+        return _ok(request_id, resp_data)
 
     except sqlite3.Error as exc:
         return _err(request_id, ERR_DB_ERROR, f"Database error updating order status: {exc}")
@@ -1391,6 +1560,256 @@ def _handle_update_menu_item_availability(request_id: str, payload: dict) -> dic
 
 
 # -------------------------------------------------------------------
+# Action: get_refund (V3.2)
+# -------------------------------------------------------------------
+def _handle_get_refund(request_id: str, payload: dict) -> dict:
+    """
+    Retrieve refund details for an order.
+    Enforces customer and seller authorization.
+    """
+    if "order_id" not in payload:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'order_id'.")
+    order_id = payload["order_id"]
+    if not isinstance(order_id, int) or isinstance(order_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'order_id' must be an integer.")
+
+    customer_id = payload.get("customer_id")
+    seller_id = payload.get("seller_id")
+
+    try:
+        with get_connection() as conn:
+            ord_row = conn.execute(
+                "SELECT order_id, customer_id, restaurant_id FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+
+            if ord_row is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No order found with id {order_id}.")
+
+            if customer_id is not None:
+                if not isinstance(customer_id, int) or isinstance(customer_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'customer_id' must be an integer.")
+                if ord_row["customer_id"] != customer_id:
+                    return _err(request_id, ERR_FORBIDDEN, f"Access denied: order {order_id} does not belong to customer {customer_id}.")
+
+            if seller_id is not None:
+                if not isinstance(seller_id, int) or isinstance(seller_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'seller_id' must be an integer.")
+                restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+                if err:
+                    return err
+                if ord_row["restaurant_id"] != restaurant["restaurant_id"]:
+                    return _err(request_id, ERR_FORBIDDEN, f"Access denied: order {order_id} does not belong to your restaurant.")
+
+            ref_row = conn.execute(
+                """
+                SELECT refund_id, order_id, amount, refund_status, reason,
+                       transaction_ref, attempt_count, created_at, updated_at
+                FROM refunds
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            if ref_row is None:
+                return _err(request_id, ERR_REFUND_NOT_FOUND, f"No refund record found for order {order_id}.")
+
+            return _ok(request_id, {
+                "refund_id": ref_row["refund_id"],
+                "order_id": ref_row["order_id"],
+                "amount": float(ref_row["amount"]),
+                "refund_status": ref_row["refund_status"],
+                "reason": ref_row["reason"],
+                "transaction_ref": ref_row["transaction_ref"],
+                "attempt_count": ref_row["attempt_count"],
+                "created_at": ref_row["created_at"],
+                "updated_at": ref_row["updated_at"],
+            })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error retrieving refund: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: get_refund_history (V3.2)
+# -------------------------------------------------------------------
+def _handle_get_refund_history(request_id: str, payload: dict) -> dict:
+    """
+    Retrieve refund history for a customer or a seller's restaurant.
+    """
+    customer_id = payload.get("customer_id")
+    seller_id = payload.get("seller_id")
+
+    if customer_id is None and seller_id is None:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain either 'customer_id' or 'seller_id'.")
+
+    try:
+        with get_connection() as conn:
+            if customer_id is not None:
+                if not isinstance(customer_id, int) or isinstance(customer_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'customer_id' must be an integer.")
+                user = conn.execute("SELECT user_id FROM users WHERE user_id = ?;", (customer_id,)).fetchone()
+                if user is None:
+                    return _err(request_id, ERR_NOT_FOUND, f"No customer found with id {customer_id}.")
+
+                rows = conn.execute(
+                    """
+                    SELECT ref.refund_id, ref.order_id, ref.amount, ref.refund_status, ref.reason,
+                           ref.transaction_ref, ref.attempt_count, ref.created_at, ref.updated_at,
+                           o.restaurant_id, r.name AS restaurant_name
+                    FROM refunds ref
+                    JOIN orders o ON ref.order_id = o.order_id
+                    JOIN restaurants r ON o.restaurant_id = r.restaurant_id
+                    WHERE o.customer_id = ?
+                    ORDER BY ref.refund_id DESC;
+                    """,
+                    (customer_id,),
+                ).fetchall()
+            else:
+                if not isinstance(seller_id, int) or isinstance(seller_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'seller_id' must be an integer.")
+                restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+                if err:
+                    return err
+
+                rows = conn.execute(
+                    """
+                    SELECT ref.refund_id, ref.order_id, ref.amount, ref.refund_status, ref.reason,
+                           ref.transaction_ref, ref.attempt_count, ref.created_at, ref.updated_at,
+                           o.customer_id, u.name AS customer_name
+                    FROM refunds ref
+                    JOIN orders o ON ref.order_id = o.order_id
+                    JOIN users u ON o.customer_id = u.user_id
+                    WHERE o.restaurant_id = ?
+                    ORDER BY ref.refund_id DESC;
+                    """,
+                    (restaurant["restaurant_id"],),
+                ).fetchall()
+
+            refunds = [
+                {
+                    "refund_id": r["refund_id"],
+                    "order_id": r["order_id"],
+                    "amount": float(r["amount"]),
+                    "refund_status": r["refund_status"],
+                    "reason": r["reason"],
+                    "transaction_ref": r["transaction_ref"],
+                    "attempt_count": r["attempt_count"],
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            ]
+            return _ok(request_id, refunds)
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error retrieving refund history: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: retry_refund (V3.2)
+# -------------------------------------------------------------------
+def _handle_retry_refund(request_id: str, payload: dict) -> dict:
+    """
+    Retry a failed refund for an order.
+    Validates ownership, ensures refund is in 'failed' status, generates a new transaction_ref,
+    increments attempt_count, and atomically updates the record.
+    """
+    if "order_id" not in payload:
+        return _err(request_id, ERR_INVALID_PAYLOAD, "payload must contain 'order_id'.")
+    order_id = payload["order_id"]
+    if not isinstance(order_id, int) or isinstance(order_id, bool):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'order_id' must be an integer.")
+
+    customer_id = payload.get("customer_id")
+    seller_id = payload.get("seller_id")
+    simulate_failure = bool(payload.get("simulate_failure", False))
+
+    try:
+        with get_connection() as conn:
+            ord_row = conn.execute(
+                "SELECT order_id, customer_id, restaurant_id, order_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+
+            if ord_row is None:
+                return _err(request_id, ERR_NOT_FOUND, f"No order found with id {order_id}.")
+
+            if customer_id is not None:
+                if not isinstance(customer_id, int) or isinstance(customer_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'customer_id' must be an integer.")
+                if ord_row["customer_id"] != customer_id:
+                    return _err(request_id, ERR_FORBIDDEN, f"Access denied: order {order_id} does not belong to customer {customer_id}.")
+
+            if seller_id is not None:
+                if not isinstance(seller_id, int) or isinstance(seller_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'seller_id' must be an integer.")
+                restaurant, _, err = _authenticate_seller(conn, request_id, seller_id)
+                if err:
+                    return err
+                if ord_row["restaurant_id"] != restaurant["restaurant_id"]:
+                    return _err(request_id, ERR_FORBIDDEN, f"Access denied: order {order_id} does not belong to your restaurant.")
+
+            ref_row = conn.execute(
+                """
+                SELECT refund_id, order_id, amount, refund_status, reason, transaction_ref, attempt_count
+                FROM refunds
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            if ref_row is None:
+                return _err(request_id, ERR_REFUND_NOT_FOUND, f"No refund record found for order {order_id}.")
+
+            if ref_row["refund_status"] == "refunded":
+                return _err(request_id, ERR_REFUND_ALREADY_PROCESSED, f"Refund for order {order_id} has already succeeded.")
+
+            if ref_row["refund_status"] != "failed":
+                return _err(request_id, ERR_REFUND_NOT_RETRYABLE, f"Refund for order {order_id} is in '{ref_row['refund_status']}' status and cannot be retried.")
+
+            new_status = "failed" if simulate_failure else "refunded"
+            new_txn_ref = f"REF-SIM-{order_id}-{uuid.uuid4().hex[:8].upper()}"
+
+            conn.execute(
+                """
+                UPDATE refunds
+                SET refund_status = ?,
+                    transaction_ref = ?,
+                    attempt_count = attempt_count + 1,
+                    updated_at = datetime('now')
+                WHERE order_id = ?;
+                """,
+                (new_status, new_txn_ref, order_id),
+            )
+
+            updated_row = conn.execute(
+                """
+                SELECT refund_id, order_id, amount, refund_status, reason,
+                       transaction_ref, attempt_count, created_at, updated_at
+                FROM refunds
+                WHERE order_id = ?;
+                """,
+                (order_id,),
+            ).fetchone()
+
+            return _ok(request_id, {
+                "refund_id": updated_row["refund_id"],
+                "order_id": updated_row["order_id"],
+                "amount": float(updated_row["amount"]),
+                "refund_status": updated_row["refund_status"],
+                "reason": updated_row["reason"],
+                "transaction_ref": updated_row["transaction_ref"],
+                "attempt_count": updated_row["attempt_count"],
+                "created_at": updated_row["created_at"],
+                "updated_at": updated_row["updated_at"],
+            })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error retrying refund: {exc}")
+
+
+# -------------------------------------------------------------------
 # Dispatch table — maps action name → handler function
 # -------------------------------------------------------------------
 _HANDLERS = {
@@ -1410,6 +1829,9 @@ _HANDLERS = {
     "add_menu_item":                 _handle_add_menu_item,
     "update_menu_item":              _handle_update_menu_item,
     "update_menu_item_availability": _handle_update_menu_item_availability,
+    "get_refund":                    _handle_get_refund,
+    "get_refund_history":            _handle_get_refund_history,
+    "retry_refund":                  _handle_retry_refund,
 }
 
 

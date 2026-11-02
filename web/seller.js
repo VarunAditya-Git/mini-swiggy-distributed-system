@@ -353,6 +353,17 @@
           `;
         }
 
+        let paymentBadgeHtml = `<span class="payment-tag ${isPaid ? "paid" : "pending"}">${isPaid ? "PAID" : "PAYMENT PENDING"}</span>`;
+        if (ord.refund) {
+          if (ord.refund.refund_status === "refunded") {
+            paymentBadgeHtml = `<span class="payment-tag refunded">PAID &middot; REFUNDED (${formatRupees(ord.refund.amount)})</span>`;
+          } else if (ord.refund.refund_status === "failed") {
+            paymentBadgeHtml = `<span class="payment-tag refund-failed">PAID &middot; REFUND FAILED</span>`;
+          } else {
+            paymentBadgeHtml = `<span class="payment-tag refunded">PAID &middot; REFUND ${escapeHtml(ord.refund.refund_status.toUpperCase())}</span>`;
+          }
+        }
+
         return `
           <article class="order-card" data-order-id="${ord.order_id}">
             <div class="order-card-header">
@@ -398,9 +409,7 @@
 
             <div class="order-card-footer">
               <div class="order-summary-box">
-                <span class="payment-tag ${isPaid ? "paid" : "pending"}">
-                  ${isPaid ? "PAID" : "PAYMENT PENDING"}
-                </span>
+                ${paymentBadgeHtml}
                 <div>
                   <span style="font-size: 0.8rem; color: var(--seller-text-muted);">Total Order Value:</span>
                   <span class="total-due">${formatRupees(ord.total_amount)}</span>
@@ -447,7 +456,13 @@
     if (!targetStatus) return;
 
     if (actionType === "reject") {
-      const confirmed = window.confirm(`Are you sure you want to REJECT Order #${orderId}? This cannot be undone.`);
+      const order = state.orders.find((o) => o.order_id === orderId);
+      const isPaid = order && String(order.payment_status || "").toLowerCase() === "paid";
+      let msg = `Are you sure you want to REJECT Order #${orderId}? This cannot be undone.`;
+      if (isPaid) {
+        msg = `Order #${orderId} was successfully PAID (${formatRupees(order.total_amount)}).\n\nRejecting this order will automatically initiate a simulated FULL REFUND of ${formatRupees(order.total_amount)} to the customer.\n\nProceed with rejection and refund?`;
+      }
+      const confirmed = window.confirm(msg);
       if (!confirmed) return;
     }
 
@@ -520,6 +535,50 @@
           </div>
         </div>
       </div>
+
+      ${
+        order.refund
+          ? `
+        <div style="margin-top: 1rem;">
+          <span style="color: var(--seller-text-muted); font-size: 0.8rem; display: block; margin-bottom: 0.35rem;">Simulated Refund Record</span>
+          <div style="background: var(--seller-surface-alt); border-radius: var(--seller-radius-sm); padding: 0.75rem; font-size: 0.85rem; border-left: 3px solid var(--seller-purple);">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+              <span>Refund Status:</span>
+              <strong>${escapeHtml(order.refund.refund_status.toUpperCase())}</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+              <span>Refund Amount:</span>
+              <strong>${formatRupees(order.refund.amount)}</strong>
+            </div>
+            ${
+              order.refund.transaction_ref
+                ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                <span>Refund Ref:</span>
+                <code style="color: var(--seller-purple);">${escapeHtml(order.refund.transaction_ref)}</code>
+              </div>
+            `
+                : ""
+            }
+            ${
+              order.refund.reason
+                ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                <span>Reason:</span>
+                <span>${escapeHtml(order.refund.reason)}</span>
+              </div>
+            `
+                : ""
+            }
+            <div style="display: flex; justify-content: space-between;">
+              <span>Attempts:</span>
+              <span>${order.refund.attempt_count || 1}</span>
+            </div>
+          </div>
+        </div>
+      `
+          : ""
+      }
     `;
 
     el.modalOrderDetails.classList.add("open");

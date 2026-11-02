@@ -153,3 +153,24 @@ CREATE TABLE IF NOT EXISTS deliveries (
     assigned_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     completed_at     TEXT                             -- NULL until delivered
 );
+
+-- ---------------------------------------------------------------
+-- 9. refunds (V3.2)
+--    Tracks refund processing for rejected or cancelled orders.
+--    One full refund record per order is enforced by UNIQUE(order_id).
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS refunds (
+    refund_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id        INTEGER NOT NULL UNIQUE          -- one full refund per order
+                      REFERENCES orders(order_id)
+                      ON DELETE RESTRICT,
+    amount          REAL    NOT NULL CHECK (amount > 0),
+    refund_status   TEXT    NOT NULL DEFAULT 'pending'
+                      CHECK (refund_status IN ('pending', 'processing', 'refunded', 'failed')),
+    reason          TEXT    NOT NULL,
+    transaction_ref TEXT    NOT NULL,                -- simulated gateway refund reference
+    attempt_count   INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count >= 1),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
