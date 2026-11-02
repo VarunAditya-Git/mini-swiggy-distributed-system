@@ -58,3 +58,8 @@ Thumbs.db
 
 # ----- OS temporary files -----
 desktop.ini
+
+# ----- Workspace local documents & backup copies -----
+Source Code/
+Documents/
+

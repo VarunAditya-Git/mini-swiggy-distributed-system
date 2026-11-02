@@ -659,3 +659,236 @@ class TestSellerMenuManagement:
             },
         })
         assert order_res_2["ok"] is True
+
+
+# =====================================================================
+# 4. Payment & Order Lifecycle Regression Tests
+# =====================================================================
+class TestPaymentOrderLifecycleIntegration:
+
+    def _create_order(self):
+        res = handle_request({
+            "request_id": "c-ord-reg",
+            "action": "create_order",
+            "payload": {
+                "customer_id": 1,
+                "restaurant_id": 1,
+                "items": [{"item_id": 1, "quantity": 1}],
+            },
+        })
+        assert res["ok"] is True
+        return res["data"]["order_id"]
+
+    def test_payment_after_seller_rejection_must_fail(self, db):
+        """Payment after seller rejection must be rejected and preserve rejected state."""
+        order_id = self._create_order()
+
+        # Seller rejects the order
+        rej_res = handle_request({
+            "request_id": "s-rej",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "rejected"},
+        })
+        assert rej_res["ok"] is True
+
+        # Customer attempts to simulate payment
+        pay_res = handle_request({
+            "request_id": "c-pay-rej",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert pay_res["ok"] is False
+        assert pay_res["error"]["code"] == "INVALID_REQUEST"
+        assert "Cannot process payment for rejected order" in pay_res["error"]["message"]
+
+        # Verify DB: order remains rejected, payment remains pending
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "rejected"
+            assert row["payment_status"] == "pending"
+
+            # Payments table must NOT have a paid record
+            pay_row = conn.execute("SELECT * FROM payments WHERE order_id = ?;", (order_id,)).fetchone()
+            assert pay_row is None
+
+    def test_payment_while_preparing_preserves_preparing_status(self, db):
+        """Payment while preparing must succeed in payment but preserve preparing status."""
+        order_id = self._create_order()
+
+        # Seller accepts and starts preparing
+        handle_request({
+            "request_id": "s-acc",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "accepted"},
+        })
+        handle_request({
+            "request_id": "s-prep",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "preparing"},
+        })
+
+        # Customer pays
+        pay_res = handle_request({
+            "request_id": "c-pay-prep",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert pay_res["ok"] is True
+        assert pay_res["data"]["payment_status"] == "paid"
+        assert pay_res["data"]["order_status"] == "preparing"
+
+        # Verify DB: remains preparing
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "preparing"
+            assert row["payment_status"] == "paid"
+
+    def test_payment_while_ready_for_pickup_preserves_ready_status(self, db):
+        """Payment while ready_for_pickup must succeed and preserve ready_for_pickup status."""
+        order_id = self._create_order()
+
+        # Advance to ready_for_pickup
+        handle_request({
+            "request_id": "s-acc",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "accepted"},
+        })
+        handle_request({
+            "request_id": "s-prep",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "preparing"},
+        })
+        handle_request({
+            "request_id": "s-rdy",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "ready_for_pickup"},
+        })
+
+        # Customer pays
+        pay_res = handle_request({
+            "request_id": "c-pay-rdy",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert pay_res["ok"] is True
+        assert pay_res["data"]["payment_status"] == "paid"
+        assert pay_res["data"]["order_status"] == "ready_for_pickup"
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "ready_for_pickup"
+            assert row["payment_status"] == "paid"
+
+    def test_payment_while_accepted_preserves_accepted_status(self, db):
+        """Payment while accepted preserves accepted status."""
+        order_id = self._create_order()
+
+        handle_request({
+            "request_id": "s-acc",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "accepted"},
+        })
+
+        pay_res = handle_request({
+            "request_id": "c-pay-acc",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert pay_res["ok"] is True
+        assert pay_res["data"]["payment_status"] == "paid"
+        assert pay_res["data"]["order_status"] == "accepted"
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "accepted"
+            assert row["payment_status"] == "paid"
+
+    def test_failed_payment_never_changes_order_status(self, db):
+        """Failed payment must record failed payment status without altering order status."""
+        order_id = self._create_order()
+
+        # Advance to preparing
+        handle_request({
+            "request_id": "s-acc",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "accepted"},
+        })
+        handle_request({
+            "request_id": "s-prep",
+            "action": "update_order_status",
+            "payload": {"seller_id": 2, "order_id": order_id, "status": "preparing"},
+        })
+
+        # Simulate failed payment
+        pay_res = handle_request({
+            "request_id": "c-pay-fail",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id, "simulate_failure": True},
+        })
+        assert pay_res["ok"] is True
+        assert pay_res["data"]["payment_status"] == "failed"
+        assert pay_res["data"]["order_status"] == "preparing"
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "preparing"
+            assert row["payment_status"] == "failed"
+
+    def test_existing_successful_payment_on_placed_advances_to_accepted(self, db):
+        """Payment on a placed order transitions order_status to accepted."""
+        order_id = self._create_order()
+
+        pay_res = handle_request({
+            "request_id": "c-pay-placed",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert pay_res["ok"] is True
+        assert pay_res["data"]["payment_status"] == "paid"
+        assert pay_res["data"]["order_status"] == "accepted"
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT order_status, payment_status FROM orders WHERE order_id = ?;",
+                (order_id,),
+            ).fetchone()
+            assert row["order_status"] == "accepted"
+            assert row["payment_status"] == "paid"
+
+    def test_duplicate_successful_payments_prevented(self, db):
+        """Duplicate payment on an already paid order must be rejected."""
+        order_id = self._create_order()
+
+        # First payment succeeds
+        p1 = handle_request({
+            "request_id": "c-pay-1",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert p1["ok"] is True
+
+        # Second payment fails
+        p2 = handle_request({
+            "request_id": "c-pay-2",
+            "action": "simulate_payment",
+            "payload": {"order_id": order_id},
+        })
+        assert p2["ok"] is False
+        assert p2["error"]["code"] == "PAYMENT_ALREADY_COMPLETED"
+        assert "Duplicate payment is not allowed" in p2["error"]["message"]
+

@@ -214,10 +214,10 @@ python gateway/http_gateway.py
 
 Run all tests across V0, V1, V2, and V3:
 ```powershell
-python -m pytest tests -v
+python -m pytest
 ```
 
-**Result**: 164 passed in ~50 seconds.
+**Result**: 179 passed in ~52 seconds.
 
 ---
 

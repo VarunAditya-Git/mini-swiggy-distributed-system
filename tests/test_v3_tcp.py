@@ -216,3 +216,75 @@ class TestSellerOperationsOverTCP:
             res_forbidden = client.get_seller_order(seller_id=2, order_id=order_id)
             assert res_forbidden["ok"] is False
             assert res_forbidden["error"]["code"] == "FORBIDDEN"
+
+
+class TestV3ClientCLI:
+    """Test CLI argument parsing and execution for V3 subcommands."""
+
+    def test_cli_parse_seller_profile(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["get_seller_profile", "2"])
+        assert args.command == "get_seller_profile"
+        assert args.seller_id == 2
+
+    def test_cli_parse_seller_orders(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["get_seller_orders", "2", "--status", "pending"])
+        assert args.command == "get_seller_orders"
+        assert args.seller_id == 2
+        assert args.status == "pending"
+
+    def test_cli_parse_seller_order(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["get_seller_order", "2", "42"])
+        assert args.command == "get_seller_order"
+        assert args.seller_id == 2
+        assert args.order_id == 42
+
+    def test_cli_parse_update_order_status(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["update_order_status", "2", "42", "preparing"])
+        assert args.command == "update_order_status"
+        assert args.seller_id == 2
+        assert args.order_id == 42
+        assert args.status == "preparing"
+
+    def test_cli_parse_seller_menu(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["get_seller_menu", "2"])
+        assert args.command == "get_seller_menu"
+        assert args.seller_id == 2
+
+    def test_cli_parse_add_menu_item(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args([
+            "add_menu_item", "2",
+            "--name", "Paneer Tikka",
+            "--price", "180.0",
+            "--description", "Spicy cottage cheese skewers",
+            "--available", "1",
+        ])
+        assert args.command == "add_menu_item"
+        assert args.seller_id == 2
+        assert args.name == "Paneer Tikka"
+        assert args.price == 180.0
+        assert args.description == "Spicy cottage cheese skewers"
+        assert args.available == 1
+
+    def test_cli_parse_update_menu_item(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["update_menu_item", "2", "1", "--price", "199.0", "--available", "0"])
+        assert args.command == "update_menu_item"
+        assert args.seller_id == 2
+        assert args.item_id == 1
+        assert args.price == 199.0
+        assert args.available == 0
+
+    def test_cli_parse_update_menu_item_availability(self):
+        from clients.tcp_client import _parse_args
+        args = _parse_args(["update_menu_item_availability", "2", "1", "0"])
+        assert args.command == "update_menu_item_availability"
+        assert args.seller_id == 2
+        assert args.item_id == 1
+        assert args.is_available == 0
+

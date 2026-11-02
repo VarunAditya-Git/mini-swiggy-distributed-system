@@ -385,11 +385,11 @@ def _handle_simulate_payment(request_id: str, payload: dict) -> dict:
                     f"Order {order_id} has already been paid. Duplicate payment is not allowed.",
                 )
 
-            if order["order_status"] == "cancelled":
+            if order["order_status"] in ("rejected", "cancelled"):
                 return _err(
                     request_id,
                     ERR_INVALID_REQUEST,
-                    f"Cannot process payment for cancelled order {order_id}.",
+                    f"Cannot process payment for {order['order_status']} order {order_id}.",
                 )
 
             sim_status = str(payload.get("simulate_status", "")).lower()
@@ -400,12 +400,19 @@ def _handle_simulate_payment(request_id: str, payload: dict) -> dict:
             amount = float(order["total_amount"])
             txn_ref = f"TXN-SIM-{order_id}-{uuid.uuid4().hex[:8].upper()}"
 
+            cur_order_status = order["order_status"]
+
             if is_failure:
                 target_payment_status = "failed"
-                target_order_status = order["order_status"]
+                target_order_status = cur_order_status
             else:
                 target_payment_status = "paid"
-                target_order_status = "accepted"
+                # If order was placed/pending, successful payment advances to accepted.
+                # If already accepted, preparing, or ready_for_pickup, preserve current status.
+                if cur_order_status in ("placed", "pending"):
+                    target_order_status = "accepted"
+                else:
+                    target_order_status = cur_order_status
 
             # Persist in payments table (upsert handles retry after previous failed attempt)
             conn.execute(

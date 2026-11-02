@@ -322,8 +322,8 @@ def _parse_items_arg(raw: str) -> list[dict]:
     return items
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mini Swiggy TCP Client (V1 & V2)")
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Mini Swiggy TCP Client (V1, V2 & V3)")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -353,7 +353,47 @@ def _parse_args() -> argparse.Namespace:
     hist_p = subparsers.add_parser("get_order_history", help="Retrieve order history for a customer")
     hist_p.add_argument("customer_id", type=int, help="Customer user ID")
 
-    return parser.parse_args()
+    # V3 Seller Dashboard actions
+    seller_prof_p = subparsers.add_parser("get_seller_profile", help="Retrieve seller profile and stats")
+    seller_prof_p.add_argument("seller_id", type=int, help="Seller user ID")
+
+    seller_ords_p = subparsers.add_parser("get_seller_orders", help="Retrieve orders for seller's restaurant")
+    seller_ords_p.add_argument("seller_id", type=int, help="Seller user ID")
+    seller_ords_p.add_argument("--status", default="", help="Filter orders by status")
+
+    seller_ord_p = subparsers.add_parser("get_seller_order", help="Retrieve a single order for seller's restaurant")
+    seller_ord_p.add_argument("seller_id", type=int, help="Seller user ID")
+    seller_ord_p.add_argument("order_id", type=int, help="Order ID to retrieve")
+
+    upd_status_p = subparsers.add_parser("update_order_status", help="Update lifecycle status of an order")
+    upd_status_p.add_argument("seller_id", type=int, help="Seller user ID")
+    upd_status_p.add_argument("order_id", type=int, help="Order ID to update")
+    upd_status_p.add_argument("status", type=str, help="Target status (accepted, preparing, ready_for_pickup, rejected)")
+
+    seller_menu_p = subparsers.add_parser("get_seller_menu", help="Retrieve menu items for seller's restaurant")
+    seller_menu_p.add_argument("seller_id", type=int, help="Seller user ID")
+
+    add_item_p = subparsers.add_parser("add_menu_item", help="Add a new menu item to seller's restaurant")
+    add_item_p.add_argument("seller_id", type=int, help="Seller user ID")
+    add_item_p.add_argument("--name", required=True, type=str, help="Menu item name")
+    add_item_p.add_argument("--price", required=True, type=float, help="Item price in INR")
+    add_item_p.add_argument("--description", default="", type=str, help="Item description")
+    add_item_p.add_argument("--available", type=int, default=1, choices=[0, 1], help="Availability (1 or 0)")
+
+    upd_item_p = subparsers.add_parser("update_menu_item", help="Update details of an existing menu item")
+    upd_item_p.add_argument("seller_id", type=int, help="Seller user ID")
+    upd_item_p.add_argument("item_id", type=int, help="Menu item ID to update")
+    upd_item_p.add_argument("--name", type=str, default=None, help="Updated item name")
+    upd_item_p.add_argument("--price", type=float, default=None, help="Updated item price")
+    upd_item_p.add_argument("--description", type=str, default=None, help="Updated description")
+    upd_item_p.add_argument("--available", type=int, default=None, choices=[0, 1], help="Updated availability (1 or 0)")
+
+    avail_p = subparsers.add_parser("update_menu_item_availability", help="Toggle availability of a menu item")
+    avail_p.add_argument("seller_id", type=int, help="Seller user ID")
+    avail_p.add_argument("item_id", type=int, help="Menu item ID")
+    avail_p.add_argument("is_available", type=int, choices=[0, 1], help="Availability (1=available, 0=sold out)")
+
+    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
@@ -382,6 +422,37 @@ if __name__ == "__main__":
                 _print_response(client.get_order(args.order_id))
             elif args.command == "get_order_history":
                 _print_response(client.get_order_history(args.customer_id))
+            elif args.command == "get_seller_profile":
+                _print_response(client.get_seller_profile(args.seller_id))
+            elif args.command == "get_seller_orders":
+                _print_response(client.get_seller_orders(args.seller_id, status=args.status))
+            elif args.command == "get_seller_order":
+                _print_response(client.get_seller_order(args.seller_id, args.order_id))
+            elif args.command == "update_order_status":
+                _print_response(client.update_order_status(args.seller_id, args.order_id, args.status))
+            elif args.command == "get_seller_menu":
+                _print_response(client.get_seller_menu(args.seller_id))
+            elif args.command == "add_menu_item":
+                _print_response(client.add_menu_item(
+                    args.seller_id,
+                    name=args.name,
+                    price=args.price,
+                    description=args.description,
+                    is_available=args.available,
+                ))
+            elif args.command == "update_menu_item":
+                fields = {}
+                if args.name is not None:
+                    fields["name"] = args.name
+                if args.price is not None:
+                    fields["price"] = args.price
+                if args.description is not None:
+                    fields["description"] = args.description
+                if args.available is not None:
+                    fields["is_available"] = args.available
+                _print_response(client.update_menu_item(args.seller_id, args.item_id, **fields))
+            elif args.command == "update_menu_item_availability":
+                _print_response(client.update_menu_item_availability(args.seller_id, args.item_id, args.is_available))
     except ConnectionRefusedError as exc:
         print(f"[client] ERROR: {exc}")
         sys.exit(1)
@@ -391,3 +462,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[client] Unexpected error: {exc}")
         sys.exit(1)
+

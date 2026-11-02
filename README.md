@@ -16,7 +16,7 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | **V1** | Merged to `main` | Raw TCP sockets · Newline-delimited JSON framing · Read-only actions · 42 tests |
 | **V2** | Merged to `main` | Core Food Ordering · Atomic transactions · Price snapshots · Simulated payments · Order history · 41 tests |
 | **Web Extension** | Merged to `main` | Customer Web Interface & HTTP Gateway · Modern web UI · REST API bridge · Single-restaurant cart · Receipt viewer · 18 tests |
-| **V3** | **Complete** | **Seller Dashboard & Restaurant Management System** · Multi-tenant kitchen management · Order lifecycle state machine · Real-time menu management & availability · 52 new tests (**164 total**) |
+| **V3** | **Complete** | **Seller Dashboard & Restaurant Management System** · Multi-tenant kitchen management · Order lifecycle state machine · Real-time menu management & availability · 67 new tests (**179 total**) |
 | **V4** (planned) | Future | Independent networked microservices (Restaurant, Ordering, Payment, Delivery) |
 | **V5+** (planned) | Future | Asynchronous messaging, caching, fault tolerance, and consensus |
 
@@ -29,10 +29,10 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | Language | Python 3.11+ | Clean, readable standard library implementations |
 | Networking | `socket` (stdlib) | Raw TCP transport and low-level stream framing |
 | Serialization | `json` (stdlib) | Newline-delimited JSON (NDJSON) protocol |
-| Web Gateway | `http.server` (stdlib) | Non-blocking ThreadingHTTPServer bridging HTTP to TCP |
+| Web Gateway | `http.server` (stdlib) | Concurrent ThreadingHTTPServer bridging HTTP to TCP |
 | Frontend | Vanilla HTML5, CSS3, JS | Modern, responsive Indian food-delivery & kitchen partner interfaces |
 | Storage | SQLite (`sqlite3` stdlib) | Relational persistence with foreign keys and ACID transactions |
-| Testing | `pytest` | Comprehensive unit and real TCP integration testing (**164 automated tests**) |
+| Testing | `pytest` | Comprehensive unit and real TCP integration testing (**179 automated tests**) |
 
 ---
 
@@ -151,25 +151,53 @@ python -m clients.tcp_client get_order 1
 python -m clients.tcp_client get_order_history 1
 ```
 
-### 4. Start the Web Interface (Browser Experience)
+#### Seller Kitchen Actions (V3)
+```powershell
+# 1. View seller profile and dashboard statistics (Bob Seller ID 2)
+python -m clients.tcp_client get_seller_profile 2
 
-To experience the modern customer-facing web UI:
+# 2. View incoming restaurant orders (with optional status filtering)
+python -m clients.tcp_client get_seller_orders 2
+python -m clients.tcp_client get_seller_orders 2 --status pending
 
-1. **Terminal 1** (TCP Server):
+# 3. View individual order details with snapshotted items
+python -m clients.tcp_client get_seller_order 2 1
+
+# 4. Advance order lifecycle state (accepted -> preparing -> ready_for_pickup, or rejected)
+python -m clients.tcp_client update_order_status 2 1 accepted
+python -m clients.tcp_client update_order_status 2 1 preparing
+python -m clients.tcp_client update_order_status 2 1 ready_for_pickup
+
+# 5. Retrieve restaurant menu items
+python -m clients.tcp_client get_seller_menu 2
+
+# 6. Add a new menu item to seller's restaurant
+python -m clients.tcp_client add_menu_item 2 --name "Paneer Tikka" --price 180.0 --description "Spiced skewers" --available 1
+
+# 7. Edit an existing menu item (preserves historical order snapshots)
+python -m clients.tcp_client update_menu_item 2 1 --price 195.0
+
+# 8. Toggle item availability (immediately affects customer ordering)
+python -m clients.tcp_client update_menu_item_availability 2 1 0
+```
+
+### 4. Start the Web Interfaces (Browser Experience)
+
+To experience both the customer ordering storefront and the seller kitchen dashboard:
+
+1. **Terminal 1 — Core TCP Server (Port 5000)**:
    ```powershell
    python -m server.tcp_server
    ```
-2. **Terminal 2** (HTTP Gateway):
+2. **Terminal 2 — HTTP Web Gateway (Port 8000)**:
    ```powershell
    python -m gateway.http_gateway
    ```
 3. **Open in Browser**:
-   ```
-   http://127.0.0.1:8000
-   ```
-   *The website communicates with the HTTP gateway, which forwards NDJSON requests to the backend TCP socket server.*
+   - **Customer Storefront**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/) — Browse dishes, add to cart, checkout, and track real-time kitchen status.
+   - **Seller Kitchen Dashboard**: [http://127.0.0.1:8000/seller](http://127.0.0.1:8000/seller) — Manage live incoming order queues, advance kitchen preparation, and update menus.
 
-See [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md) for full architectural documentation.
+See [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md) and [`docs/V3_SELLER_DASHBOARD.md`](docs/V3_SELLER_DASHBOARD.md) for full architectural documentation.
 
 ---
 
@@ -178,67 +206,69 @@ See [`docs/WEB_INTERFACE.md`](docs/WEB_INTERFACE.md) for full architectural docu
 For beginners learning distributed systems, here is step-by-step what happens under the hood:
 
 ```
-[Customer Client]                                                    [TCP Server & SQLite DB]
+[Customer / Seller Client]                                           [TCP Server & SQLite DB]
        │                                                                        │
-       ├─ 1. Build JSON payload: customer_id, restaurant_id, items              │
+       ├─ 1. Build JSON payload: action, seller_id / customer_id, data         │
        ├─ 2. Append '\n' delimiter to mark end of message                       │
        ├─ 3. Send raw UTF-8 byte stream across TCP socket ────────────────────> │
        │                                                                        ├─ 4. Accumulate chunks in buffer until '\n'
        │                                                                        ├─ 5. Parse JSON into Python dict
-       │                                                                        ├─ 6. Validate customer, restaurant, availability
-       │                                                                        ├─ 7. Fetch official item prices from SQLite
-       │                                                                        │     (never trust prices sent by client!)
-       │                                                                        ├─ 8. Calculate total amount on server
-       │                                                                        ├─ 9. BEGIN TRANSACTION:
-       │                                                                        │     - INSERT into orders table
-       │                                                                        │     - INSERT into order_items (unit price snapshot)
+       │                                                                        ├─ 6. Validate actor role, restaurant ownership, availability
+       │                                                                        ├─ 7. Execute state transition or price calculation
+       │                                                                        ├─ 8. BEGIN TRANSACTION:
+       │                                                                        │     - Perform atomic SQL inserts/updates
        │                                                                        │     - COMMIT TRANSACTION (atomic rollback on error)
-       │                                                                        ├─ 10. Format success response JSON + '\n'
+       │                                                                        ├─ 9. Format response JSON + '\n'
        │ <───────────────── Receive raw UTF-8 byte stream ──────────────────────┤
-       ├─ 11. Read buffer until '\n', parse JSON response, and print order ID   │
+       ├─ 10. Read buffer until '\n', parse JSON response                       │
 ```
 
-### Core Design Decisions in V2:
-1. **Never Trust Client Prices**: The client only sends `item_id` and `quantity`. The server retrieves `price` directly from the database to prevent client tampering.
-2. **Order-Time Price Snapshotting**: Restaurants may update their food prices later. To preserve historical and accounting accuracy, the unit price at the moment of order creation is stored in `order_items.unit_price`.
-3. **Database Transaction Atomicity**: Orders and their line items are inserted within a single SQLite transaction block (`with conn:`). If any item fails, the entire transaction rolls back—leaving no orphan or partial orders in the database.
-4. **Idempotent Payment Protection**: Once an order has `payment_status = 'paid'`, subsequent payment attempts are rejected with `PAYMENT_ALREADY_COMPLETED`, protecting users from double-billing.
+### Core Design Decisions in V3:
+1. **Zero-Trust Role-Based Access Control (RBAC)**: Backend validates restaurant ownership in SQLite (`restaurants.owner_user_id`). Sellers can only inspect or modify their own kitchen's orders and menus.
+2. **Strict Lifecycle State Machine**: Finite-state transitions (`placed` $\rightarrow$ `accepted` $\rightarrow$ `preparing` $\rightarrow$ `ready_for_pickup` or `rejected`) prevent invalid or backwards status jumps.
+3. **Order-Time Price Snapshotting**: Historical price consistency is preserved. Editing menu prices never alters line item records in past customer receipts.
+4. **Idempotent Payment & Lifecycle Protection**: Once an order has `payment_status = 'paid'`, subsequent payment attempts are rejected. Payments cannot resurrect rejected orders or demote in-progress kitchen preparations.
 
 ---
 
 ## Running the Automated Test Suite
 
-Every feature in V0, V1, and V2 is backed by automated tests:
+Every feature across V0, V1, V2, and V3 is backed by automated tests:
 
 ```powershell
-# Run the entire test suite (94 tests)
-python -m pytest tests/ -v
+# Run the entire test suite from root (179 tests)
+python -m pytest
 
-# Run V2 unit tests only (31 tests)
-python -m pytest tests/test_v2_order_handler.py -v
+# Run V3 seller backend tests only
+python -m pytest tests/test_v3_seller_handler.py -v
 
-# Run V2 TCP socket tests only (10 tests)
-python -m pytest tests/test_v2_tcp.py -v
+# Run V3 TCP integration tests only
+python -m pytest tests/test_v3_tcp.py -v
+
+# Run V3 Gateway integration tests only
+python -m pytest tests/test_v3_gateway.py -v
 ```
 
 ### Exact Test Suite Results:
-- **Total collected**: `94`
-- **Passed**: `94`
+- **Total collected**: `179`
+- **Passed**: `179`
 - **Failed**: `0`
 - **Skipped**: `0`
 
 ---
 
-## Version 2 Limitations & Roadmap
+## Architecture, Limitations & Roadmap
 
-- **Single-Threaded Server**: The server currently handles one client connection at a time. Concurrency with Python threads or worker pools will be introduced in V3.
+- **Single-Threaded TCP Backend**: The authoritative TCP server (`server/tcp_server.py`) operates as a single-threaded sequential daemon accepting one connection per request. Concurrency is handled at Tier 2 by the HTTP Gateway's `ThreadingHTTPServer`, which multiplexes requests to the backend TCP socket.
+- **Development-Only Seller Identity**: In V0–V3, cryptographic passwords, JWT tokens, and session cookies are intentionally out of scope for educational simplicity. Development user identities are supplied via parameters (`seller_id=2` for Bob Seller, owner of Hyderabad Spice House; `customer_id=1` for Alice Customer). Multi-tenant isolation and role checks are strictly enforced on the server, but production cryptographic authentication is planned for future versions.
 - **Simulated Payments**: Payments are validated and persisted locally without external third-party payment gateways (Razorpay, Stripe).
-- **Single-Node SQLite**: Data is persisted in a local SQLite file rather than a distributed multi-node database cluster.
-- **No Background Delivery Worker**: Delivery assignment and tracking will be automated in subsequent versions.
+- **Single-Node SQLite**: Data is persisted in a local SQLite file (`swiggy.db`) with foreign keys enforced.
+- **No Background Delivery Worker**: Automated delivery partner dispatch and live GPS tracking will be introduced in V4.
 
 ---
 
 ## License
 
 MIT — Free for educational use and experimentation.
+
 
