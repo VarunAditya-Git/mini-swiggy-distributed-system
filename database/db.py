@@ -102,6 +102,24 @@ def migrate_db() -> None:
             conn.execute("PRAGMA foreign_keys = ON;")
             print("[db] Migrated orders table to V3 schema.")
 
+        # V3.2: Ensure refunds table exists for existing databases
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS refunds (
+                refund_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id        INTEGER NOT NULL UNIQUE
+                                  REFERENCES orders(order_id)
+                                  ON DELETE RESTRICT,
+                amount          REAL    NOT NULL CHECK (amount > 0),
+                refund_status   TEXT    NOT NULL DEFAULT 'pending'
+                                  CHECK (refund_status IN ('pending', 'processing', 'refunded', 'failed')),
+                reason          TEXT    NOT NULL,
+                transaction_ref TEXT    NOT NULL,
+                attempt_count   INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count >= 1),
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
+
 
 def init_db() -> None:
     """

@@ -619,6 +619,18 @@ body.seller-body {
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
+.payment-tag.refunded {
+  background: var(--seller-purple-light);
+  color: var(--seller-purple);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.payment-tag.refund-failed {
+  background: var(--seller-red-light);
+  color: var(--seller-red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
 .order-actions {
   display: flex;
   align-items: center;

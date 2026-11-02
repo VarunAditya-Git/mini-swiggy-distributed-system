@@ -102,6 +102,7 @@ stateDiagram-v2
 - An order that has been `rejected` or `cancelled` cannot transition to `accepted` or `preparing`.
 - An order already in `preparing` cannot be rejected.
 - An order already `ready_for_pickup` cannot be modified by the kitchen.
+- In V3.2+, rejecting an already-paid order automatically triggers an immutable simulated full refund; see `docs/V3_2_REFUNDS.md`.
 
 ---
 

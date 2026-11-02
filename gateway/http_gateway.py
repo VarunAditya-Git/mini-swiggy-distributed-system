@@ -64,6 +64,9 @@ ERROR_STATUS_MAP = {
     "MALFORMED_JSON": 400,
     "MESSAGE_TOO_LARGE": 413,
     "DB_ERROR": 500,
+    "REFUND_NOT_FOUND": 404,
+    "REFUND_ALREADY_PROCESSED": 409,
+    "REFUND_NOT_RETRYABLE": 409,
 }
 
 
@@ -162,10 +165,12 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             "error": {"code": code, "message": message},
         })
 
-    def _read_json_body(self) -> dict | None:
+    def _read_json_body(self, optional: bool = False) -> dict | None:
         """Read and parse the JSON request body with size limits."""
         content_length_header = self.headers.get("Content-Length")
         if not content_length_header:
+            if optional:
+                return {}
             self._send_error(400, "MISSING_BODY", "Request body is required.")
             return None
 
@@ -176,6 +181,8 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             return None
 
         if length <= 0:
+            if optional:
+                return {}
             self._send_error(400, "EMPTY_BODY", "Request body cannot be empty.")
             return None
 
@@ -263,7 +270,34 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("list_menu", {"restaurant_id": restaurant_id})
                 return
 
-        # 4. Get order by ID with ownership verification: /api/orders/{order_id}?customer_id=1
+        # 4. Get refund for order: /api/orders/{order_id}/refund?customer_id=1 (or ?seller_id=2)
+        if path.startswith("/api/orders/") and path.endswith("/refund"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "orders" and parts[3] == "refund":
+                try:
+                    order_id = int(parts[2])
+                except ValueError:
+                    self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
+                    return
+                payload = {"order_id": order_id}
+                cust_param = query.get("customer_id")
+                if cust_param and cust_param[0]:
+                    try:
+                        payload["customer_id"] = int(cust_param[0])
+                    except ValueError:
+                        self._send_error(400, "INVALID_REQUEST", "customer_id must be an integer.")
+                        return
+                seller_param = query.get("seller_id")
+                if seller_param and seller_param[0]:
+                    try:
+                        payload["seller_id"] = int(seller_param[0])
+                    except ValueError:
+                        self._send_error(400, "INVALID_REQUEST", "seller_id must be an integer.")
+                        return
+                self._forward_and_respond("get_refund", payload)
+                return
+
+        # 5. Get order by ID with ownership verification: /api/orders/{order_id}?customer_id=1
         if path.startswith("/api/orders/"):
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "orders":
@@ -291,7 +325,7 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_get_order(order_id, customer_id)
                 return
 
-        # 5. Get order history for customer: /api/customers/{customer_id}/orders
+        # 6. Get order history for customer: /api/customers/{customer_id}/orders
         if path.startswith("/api/customers/") and path.endswith("/orders"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "customers" and parts[3] == "orders":
@@ -303,7 +337,19 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("get_order_history", {"customer_id": customer_id})
                 return
 
-        # 6. Seller Profile: GET /api/seller/profile?seller_id=2
+        # 7. Get refund history for customer: /api/customers/{customer_id}/refunds
+        if path.startswith("/api/customers/") and path.endswith("/refunds"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "customers" and parts[3] == "refunds":
+                try:
+                    customer_id = int(parts[2])
+                except ValueError:
+                    self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
+                    return
+                self._forward_and_respond("get_refund_history", {"customer_id": customer_id})
+                return
+
+        # 8. Seller Profile: GET /api/seller/profile?seller_id=2
         if path == "/api/seller/profile":
             seller_id = self._parse_int_query_param(query, "seller_id")
             if seller_id is None:
@@ -311,7 +357,7 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             self._forward_and_respond("get_seller_profile", {"seller_id": seller_id})
             return
 
-        # 7. Seller Orders: GET /api/seller/orders?seller_id=2(&status=pending)
+        # 9. Seller Orders: GET /api/seller/orders?seller_id=2(&status=pending)
         if path == "/api/seller/orders":
             seller_id = self._parse_int_query_param(query, "seller_id")
             if seller_id is None:
@@ -324,7 +370,7 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             self._forward_and_respond("get_seller_orders", payload)
             return
 
-        # 8. Seller Order Detail: GET /api/seller/orders/{order_id}?seller_id=2
+        # 10. Seller Order Detail: GET /api/seller/orders/{order_id}?seller_id=2
         if path.startswith("/api/seller/orders/"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "orders":
@@ -339,12 +385,20 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("get_seller_order", {"seller_id": seller_id, "order_id": order_id})
                 return
 
-        # 9. Seller Menu: GET /api/seller/menu?seller_id=2
+        # 11. Seller Menu: GET /api/seller/menu?seller_id=2
         if path == "/api/seller/menu":
             seller_id = self._parse_int_query_param(query, "seller_id")
             if seller_id is None:
                 return
             self._forward_and_respond("get_seller_menu", {"seller_id": seller_id})
+            return
+
+        # 12. Seller Refunds: GET /api/seller/refunds?seller_id=2
+        if path == "/api/seller/refunds":
+            seller_id = self._parse_int_query_param(query, "seller_id")
+            if seller_id is None:
+                return
+            self._forward_and_respond("get_refund_history", {"seller_id": seller_id})
             return
 
         # 10. Any other unmatched /api route
@@ -407,7 +461,40 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_and_respond("simulate_payment", body)
                 return
 
-        # 3. Seller update order status: POST /api/seller/orders/{order_id}/status
+        # 3. Retry refund: POST /api/orders/{order_id}/refund/retry
+        if path.startswith("/api/orders/") and path.endswith("/refund/retry"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 5 and parts[0] == "api" and parts[1] == "orders" and parts[3] == "refund" and parts[4] == "retry":
+                try:
+                    order_id = int(parts[2])
+                except ValueError:
+                    self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
+                    return
+
+                body = self._read_json_body(optional=True)
+                if body is None:
+                    return
+
+                body["order_id"] = order_id
+                query = urllib.parse.parse_qs(parsed_url.query)
+                if "customer_id" not in body:
+                    cust_param = query.get("customer_id")
+                    if cust_param and cust_param[0]:
+                        try:
+                            body["customer_id"] = int(cust_param[0])
+                        except ValueError:
+                            pass
+                if "seller_id" not in body:
+                    seller_param = query.get("seller_id")
+                    if seller_param and seller_param[0]:
+                        try:
+                            body["seller_id"] = int(seller_param[0])
+                        except ValueError:
+                            pass
+                self._forward_and_respond("retry_refund", body)
+                return
+
+        # 4. Seller update order status: POST /api/seller/orders/{order_id}/status
         if path.startswith("/api/seller/orders/") and path.endswith("/status"):
             parts = path.strip("/").split("/")
             if len(parts) == 5 and parts[0] == "api" and parts[1] == "seller" and parts[2] == "orders" and parts[4] == "status":

@@ -219,6 +219,17 @@
     getOrderHistory(customerId = state.customerId) {
       return this.request(`/api/customers/${customerId}/orders`);
     },
+
+    getRefund(orderId, customerId = state.customerId) {
+      return this.request(`/api/orders/${orderId}/refund?customer_id=${customerId}`);
+    },
+
+    retryRefund(orderId, customerId = state.customerId) {
+      return this.request(`/api/orders/${orderId}/refund/retry`, {
+        method: "POST",
+        body: jsonSerialize({ customer_id: customerId }),
+      });
+    },
   };
 
   function jsonSerialize(obj) {
@@ -859,6 +870,66 @@
         `
             : ""
         }
+        ${
+          order.refund
+            ? `
+          <div class="refund-callout">
+            <div class="refund-callout-header">
+              <span class="refund-callout-title">Simulated Refund Details</span>
+              ${
+                order.refund.refund_status === "refunded"
+                  ? `<span class="badge-refunded">Refunded &middot; ${formatRupees(order.refund.amount)}</span>`
+                  : order.refund.refund_status === "failed"
+                  ? `<span class="badge-refund-failed">Refund Failed</span>`
+                  : `<span class="badge-refund-pending">Refund ${escapeHtml(order.refund.refund_status)}</span>`
+              }
+            </div>
+            <div class="receipt-row" style="font-size: 0.82rem;">
+              <span class="text-muted">Refund Amount:</span>
+              <strong>${formatRupees(order.refund.amount)}</strong>
+            </div>
+            ${
+              order.refund.transaction_ref
+                ? `
+            <div class="receipt-row" style="font-size: 0.82rem;">
+              <span class="text-muted">Refund Ref:</span>
+              <code style="font-size: 0.75rem;">${escapeHtml(order.refund.transaction_ref)}</code>
+            </div>`
+                : ""
+            }
+            ${
+              order.refund.reason
+                ? `
+            <div class="receipt-row" style="font-size: 0.82rem;">
+              <span class="text-muted">Reason:</span>
+              <span>${escapeHtml(order.refund.reason)}</span>
+            </div>`
+                : ""
+            }
+            <div class="receipt-row" style="font-size: 0.82rem;">
+              <span class="text-muted">Processing Attempts:</span>
+              <span>${order.refund.attempt_count || 1}</span>
+            </div>
+            ${
+              order.refund.refund_status === "failed"
+                ? `
+            <div style="margin-top: 0.5rem; text-align: right;">
+              <button class="btn-retry-refund" id="btn-receipt-retry-refund" data-order-id="${order.order_id}">
+                Retry Refund
+              </button>
+            </div>`
+                : ""
+            }
+          </div>
+        `
+            : String(order.order_status || "").toLowerCase() === "rejected" && !isPaid
+            ? `
+          <div class="receipt-row" style="font-size: 0.82rem; color: var(--text-muted);">
+            <span>Refund Status:</span>
+            <span>No payment received &middot; No refund applicable</span>
+          </div>`
+            : ""
+        }
         <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 0.75rem 0;">
         <h5 style="margin-bottom: 0.5rem; font-size: 0.9rem;">Items Snapshotted at Order Time:</h5>
         ${order.items
@@ -885,6 +956,27 @@
         elements.detailReceiptId.textContent = order.order_id;
         elements.detailReceiptBody.innerHTML = html;
 
+        // Bind Retry Refund button if rendered inside the receipt body
+        document.getElementById("btn-receipt-retry-refund")?.addEventListener("click", async () => {
+          const btn = document.getElementById("btn-receipt-retry-refund");
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Retrying...";
+          }
+          try {
+            await api.retryRefund(order.order_id);
+            showToast("Refund retry processed successfully!", "success");
+            loadOrderHistory();
+            displayOrderReceipt(order.order_id, "modal");
+          } catch (err) {
+            showToast(`Refund retry failed: ${err.message}`, "error");
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = "Retry Refund";
+            }
+          }
+        });
+
         // Render dynamic footer actions based on payment eligibility
         if (elements.detailReceiptFooter) {
           if (canPay) {
@@ -897,6 +989,14 @@
             document.getElementById("btn-receipt-pay-now")?.addEventListener("click", () => {
               openPaymentModal(order);
             });
+            document.getElementById("btn-dismiss-receipt")?.addEventListener("click", () => {
+              elements.receiptModalOverlay.classList.remove("open");
+            });
+          } else if (order.refund && order.refund.refund_status === "refunded") {
+            elements.detailReceiptFooter.innerHTML = `
+              <span class="badge-refunded" style="margin-right: auto;">✓ Refunded (${formatRupees(order.refund.amount)})</span>
+              <button class="btn-secondary" id="btn-dismiss-receipt">Close</button>
+            `;
             document.getElementById("btn-dismiss-receipt")?.addEventListener("click", () => {
               elements.receiptModalOverlay.classList.remove("open");
             });
@@ -979,6 +1079,22 @@
         const statusClass = getOrderStatusClass(ord.order_status);
         const canPay = isOrderPayEligible(ord);
         const isPaid = String(ord.payment_status || "").toLowerCase() === "paid";
+        const isRejected = String(ord.order_status || "").toLowerCase() === "rejected" || String(ord.order_status || "").toLowerCase() === "cancelled";
+
+        let refundBadge = "";
+        let retryBtn = "";
+        if (ord.refund) {
+          if (ord.refund.refund_status === "refunded") {
+            refundBadge = `<span class="badge-refunded">Refunded &middot; ${formatRupees(ord.refund.amount)}</span>`;
+          } else if (ord.refund.refund_status === "failed") {
+            refundBadge = `<span class="badge-refund-failed">Refund Failed</span>`;
+            retryBtn = `<button class="btn-retry-refund btn-retry-order-refund" data-order-id="${ord.order_id}">Retry Refund</button>`;
+          } else {
+            refundBadge = `<span class="badge-refund-pending">Refund ${escapeHtml(ord.refund.refund_status)}</span>`;
+          }
+        } else if (isRejected && !isPaid) {
+          refundBadge = `<span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 500;">No payment &middot; No refund</span>`;
+        }
 
         return `
           <div class="order-history-card" data-order-id="${ord.order_id}">
@@ -990,16 +1106,18 @@
               <div class="order-history-rest">${escapeHtml(ord.restaurant_name)}</div>
               <div class="order-history-date">${escapeHtml(ord.created_at || "Recent")}</div>
             </div>
-            <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;">
               <span class="order-history-total">${formatRupees(ord.total_amount)}</span>
               <button class="btn-secondary btn-sm btn-view-receipt" data-order-id="${ord.order_id}">View Receipt</button>
               ${
                 canPay
                   ? `<button class="btn-success btn-sm btn-pay-order" data-order-id="${ord.order_id}">Pay Now</button>`
-                  : isPaid
+                  : isPaid && !ord.refund
                   ? `<span class="badge-paid">Paid</span>`
                   : ""
               }
+              ${refundBadge}
+              ${retryBtn}
             </div>
           </div>
         `;
@@ -1034,6 +1152,23 @@
         } finally {
           btn.disabled = false;
           btn.textContent = "Pay Now";
+        }
+      });
+    });
+
+    // Bind Retry Refund buttons
+    elements.ordersHistoryList.querySelectorAll(".btn-retry-order-refund").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const oid = Number(btn.getAttribute("data-order-id"));
+        btn.disabled = true;
+        btn.textContent = "Retrying...";
+        try {
+          await api.retryRefund(oid);
+          showToast(`Refund processed successfully for Order #${oid}!`, "success");
+          loadOrderHistory();
+        } catch (err) {
+          showToast(`Refund retry failed: ${err.message}`, "error");
+          loadOrderHistory();
         }
       });
     });

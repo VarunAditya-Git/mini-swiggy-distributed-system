@@ -68,6 +68,7 @@ EXPECTED_TABLES = {
     "payments",
     "delivery_partners",
     "deliveries",
+    "refunds",
 }
 
 

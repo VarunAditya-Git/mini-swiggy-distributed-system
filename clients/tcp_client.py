@@ -232,13 +232,25 @@ class SwiggyClient:
         """Retrieve specific order details with seller authorization."""
         return self.send("get_seller_order", {"seller_id": seller_id, "order_id": order_id})
 
-    def update_order_status(self, seller_id: int, order_id: int, status: str) -> dict:
+    def update_order_status(
+        self,
+        seller_id: int,
+        order_id: int,
+        status: str,
+        reason: str = "",
+        simulate_refund_failure: bool = False,
+    ) -> dict:
         """Advance or reject order lifecycle status."""
-        return self.send("update_order_status", {
+        payload = {
             "seller_id": seller_id,
             "order_id": order_id,
             "status": status,
-        })
+        }
+        if reason:
+            payload["reason"] = reason
+        if simulate_refund_failure:
+            payload["simulate_refund_failure"] = simulate_refund_failure
+        return self.send("update_order_status", payload)
 
     def get_seller_menu(self, seller_id: int) -> dict:
         """Retrieve menu items belonging to seller's restaurant."""
@@ -267,6 +279,51 @@ class SwiggyClient:
             "item_id": item_id,
             "is_available": is_available,
         })
+
+    # ---------------------------------------------------------------
+    # V3.2 Refund operations
+    # ---------------------------------------------------------------
+    def get_refund(
+        self,
+        order_id: int,
+        customer_id: int | None = None,
+        seller_id: int | None = None,
+    ) -> dict:
+        """Retrieve refund details for an order."""
+        payload = {"order_id": order_id}
+        if customer_id is not None:
+            payload["customer_id"] = customer_id
+        if seller_id is not None:
+            payload["seller_id"] = seller_id
+        return self.send("get_refund", payload)
+
+    def get_refund_history(
+        self,
+        customer_id: int | None = None,
+        seller_id: int | None = None,
+    ) -> dict:
+        """Retrieve refund history for customer or seller."""
+        payload = {}
+        if customer_id is not None:
+            payload["customer_id"] = customer_id
+        if seller_id is not None:
+            payload["seller_id"] = seller_id
+        return self.send("get_refund_history", payload)
+
+    def retry_refund(
+        self,
+        order_id: int,
+        customer_id: int | None = None,
+        seller_id: int | None = None,
+        simulate_failure: bool = False,
+    ) -> dict:
+        """Retry a failed refund."""
+        payload = {"order_id": order_id, "simulate_failure": simulate_failure}
+        if customer_id is not None:
+            payload["customer_id"] = customer_id
+        if seller_id is not None:
+            payload["seller_id"] = seller_id
+        return self.send("retry_refund", payload)
 
     def _read_response(self) -> dict:
         """
@@ -375,6 +432,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     upd_status_p.add_argument("seller_id", type=int, help="Seller user ID")
     upd_status_p.add_argument("order_id", type=int, help="Order ID to update")
     upd_status_p.add_argument("status", type=str, help="Target status (accepted, preparing, ready_for_pickup, rejected)")
+    upd_status_p.add_argument("--reason", type=str, default="", help="Optional rejection or cancellation reason")
+    upd_status_p.add_argument("--fail-refund", action="store_true", help="Simulate refund failure upon rejection")
 
     seller_menu_p = subparsers.add_parser("get_seller_menu", help="Retrieve menu items for seller's restaurant")
     seller_menu_p.add_argument("seller_id", type=int, help="Seller user ID")
@@ -398,6 +457,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     avail_p.add_argument("seller_id", type=int, help="Seller user ID")
     avail_p.add_argument("item_id", type=int, help="Menu item ID")
     avail_p.add_argument("is_available", type=int, choices=[0, 1], help="Availability (1=available, 0=sold out)")
+
+    refund_p = subparsers.add_parser("get_refund", help="Retrieve refund details for an order")
+    refund_p.add_argument("order_id", type=int, help="Order ID")
+    refund_p.add_argument("--customer-id", type=int, default=None, help="Customer ID for authorization")
+    refund_p.add_argument("--seller-id", type=int, default=None, help="Seller ID for authorization")
+
+    refund_hist_p = subparsers.add_parser("get_refund_history", help="Retrieve refund history")
+    refund_hist_p.add_argument("--customer-id", type=int, default=None, help="Customer ID")
+    refund_hist_p.add_argument("--seller-id", type=int, default=None, help="Seller ID")
+
+    retry_ref_p = subparsers.add_parser("retry_refund", help="Retry a failed refund")
+    retry_ref_p.add_argument("order_id", type=int, help="Order ID")
+    retry_ref_p.add_argument("--customer-id", type=int, default=None, help="Customer ID")
+    retry_ref_p.add_argument("--seller-id", type=int, default=None, help="Seller ID")
+    retry_ref_p.add_argument("--fail", action="store_true", help="Simulate refund processing failure")
 
     return parser.parse_args(argv)
 
@@ -436,7 +510,13 @@ if __name__ == "__main__":
             elif args.command == "get_seller_order":
                 _print_response(client.get_seller_order(args.seller_id, args.order_id))
             elif args.command == "update_order_status":
-                _print_response(client.update_order_status(args.seller_id, args.order_id, args.status))
+                _print_response(client.update_order_status(
+                    args.seller_id,
+                    args.order_id,
+                    args.status,
+                    reason=args.reason,
+                    simulate_refund_failure=args.fail_refund,
+                ))
             elif args.command == "get_seller_menu":
                 _print_response(client.get_seller_menu(args.seller_id))
             elif args.command == "add_menu_item":
@@ -460,6 +540,24 @@ if __name__ == "__main__":
                 _print_response(client.update_menu_item(args.seller_id, args.item_id, **fields))
             elif args.command == "update_menu_item_availability":
                 _print_response(client.update_menu_item_availability(args.seller_id, args.item_id, args.is_available))
+            elif args.command == "get_refund":
+                _print_response(client.get_refund(
+                    args.order_id,
+                    customer_id=args.customer_id,
+                    seller_id=args.seller_id,
+                ))
+            elif args.command == "get_refund_history":
+                _print_response(client.get_refund_history(
+                    customer_id=args.customer_id,
+                    seller_id=args.seller_id,
+                ))
+            elif args.command == "retry_refund":
+                _print_response(client.retry_refund(
+                    args.order_id,
+                    customer_id=args.customer_id,
+                    seller_id=args.seller_id,
+                    simulate_failure=args.fail,
+                ))
     except ConnectionRefusedError as exc:
         print(f"[client] ERROR: {exc}")
         sys.exit(1)
