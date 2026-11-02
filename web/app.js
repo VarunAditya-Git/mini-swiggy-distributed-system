@@ -113,6 +113,7 @@
     receiptModalOverlay: document.getElementById("receipt-modal-overlay"),
     detailReceiptId: document.getElementById("detail-receipt-id"),
     detailReceiptBody: document.getElementById("detail-receipt-body"),
+    detailReceiptFooter: document.getElementById("detail-receipt-footer"),
     btnCloseReceipt: document.getElementById("btn-close-receipt"),
     btnDismissReceipt: document.getElementById("btn-dismiss-receipt"),
   };
@@ -722,6 +723,42 @@
     }
   }
 
+  function isOrderPayEligible(order) {
+    if (!order) return false;
+    const payStatus = String(order.payment_status || "").toLowerCase().trim();
+    const ordStatus = String(order.order_status || "").toLowerCase().trim();
+    const isUnpaid = payStatus === "pending" || payStatus === "failed";
+    const isNotTerminated = ordStatus !== "rejected" && ordStatus !== "cancelled";
+    const isEligibleStatus = [
+      "placed",
+      "pending",
+      "accepted",
+      "preparing",
+      "ready",
+      "ready_for_pickup",
+    ].includes(ordStatus);
+    return isUnpaid && isNotTerminated && isEligibleStatus;
+  }
+
+  function openPaymentModal(order) {
+    state.activeOrder = order;
+
+    elements.payOrderId.textContent = order.order_id;
+    elements.payOrderStatus.textContent = `${order.order_status} · ${order.payment_status}`;
+    elements.payOrderStatus.className = `info-status ${getOrderStatusClass(order.order_status)}`;
+    elements.payServerAmount.textContent = formatRupees(order.total_amount);
+    elements.btnConfirmPayment.disabled = false;
+    elements.btnConfirmPayment.textContent = "Pay Now (Simulated)";
+
+    // Close any open overlays
+    elements.receiptModalOverlay.classList.remove("open");
+    elements.cartDrawerOverlay.classList.remove("open");
+
+    // Display Payment Step in Checkout Modal
+    showCheckoutStep("payment");
+    elements.checkoutModalOverlay.classList.add("open");
+  }
+
   async function handlePaymentSubmission() {
     if (!state.activeOrder) return;
 
@@ -733,6 +770,7 @@
     elements.btnConfirmPayment.textContent = "Processing Simulated Payment...";
 
     const paymentPayload = {
+      customer_id: state.customerId,
       payment_method: selectedMethod,
       simulate_status: simResult === "failure" ? "failed" : "paid",
       simulate_failure: simResult === "failure",
@@ -745,14 +783,21 @@
       if (payData.payment_status === "paid") {
         // Successful payment: fetch authoritative receipt
         showToast("Payment confirmed by backend!", "success");
+        state.activeOrder.payment_status = "paid";
+        if (payData.order_status) {
+          state.activeOrder.order_status = payData.order_status;
+        }
+        // Immediately reload order history in the background so it shows "Paid"
+        loadOrderHistory();
         await displayOrderReceipt(orderId, "confirmation");
       } else {
         // Simulated failure
         elements.btnConfirmPayment.disabled = false;
         elements.btnConfirmPayment.textContent = "Retry Payment (Simulated)";
         showToast("Payment simulation failed as requested. Order is still unpaid.", "warning");
-        elements.payOrderStatus.textContent = "placed · payment failed";
+        elements.payOrderStatus.textContent = `${state.activeOrder.order_status} · payment failed`;
         elements.payOrderStatus.className = "info-status status-failed";
+        loadOrderHistory();
       }
     } catch (err) {
       elements.btnConfirmPayment.disabled = false;
@@ -760,9 +805,11 @@
 
       if (err.code === "PAYMENT_ALREADY_COMPLETED") {
         showToast("Order was already paid! Fetching receipt...", "info");
+        loadOrderHistory();
         await displayOrderReceipt(orderId, "confirmation");
       } else {
         showToast(`Payment error: ${err.message}`, "error");
+        loadOrderHistory();
       }
     }
   }
@@ -771,6 +818,9 @@
     try {
       const res = await api.getOrder(orderId);
       const order = res.data;
+
+      const isPaid = String(order.payment_status || "").toLowerCase() === "paid";
+      const canPay = isOrderPayEligible(order);
 
       const html = `
         <div class="receipt-row">
@@ -791,7 +841,13 @@
         </div>
         <div class="receipt-row">
           <span class="text-muted">Payment Status:</span>
-          <strong>${escapeHtml(order.payment_status)}</strong>
+          ${
+            isPaid
+              ? `<span class="badge-paid">PAID</span>`
+              : canPay
+              ? `<span class="badge-pending">PENDING</span>`
+              : `<span class="info-status ${getOrderStatusClass(order.order_status)}">${escapeHtml(order.payment_status)}</span>`
+          }
         </div>
         ${
           order.payment?.transaction_ref
@@ -817,7 +873,7 @@
           .join("")}
         <hr style="border: 0; border-top: 1px dashed var(--border-color); margin: 0.75rem 0;">
         <div class="receipt-row" style="font-size: 1.1rem; font-weight: 800;">
-          <span>Total Paid:</span>
+          <span>${isPaid ? "Total Paid:" : "Amount Payable:"}</span>
           <span style="color: var(--primary);">${formatRupees(order.total_amount)}</span>
         </div>
       `;
@@ -828,6 +884,41 @@
       } else {
         elements.detailReceiptId.textContent = order.order_id;
         elements.detailReceiptBody.innerHTML = html;
+
+        // Render dynamic footer actions based on payment eligibility
+        if (elements.detailReceiptFooter) {
+          if (canPay) {
+            elements.detailReceiptFooter.innerHTML = `
+              <button class="btn-secondary" id="btn-dismiss-receipt">Close</button>
+              <button class="btn-success btn-pay-from-receipt" id="btn-receipt-pay-now" data-order-id="${order.order_id}">
+                Pay Now &middot; ${formatRupees(order.total_amount)}
+              </button>
+            `;
+            document.getElementById("btn-receipt-pay-now")?.addEventListener("click", () => {
+              openPaymentModal(order);
+            });
+            document.getElementById("btn-dismiss-receipt")?.addEventListener("click", () => {
+              elements.receiptModalOverlay.classList.remove("open");
+            });
+          } else if (isPaid) {
+            elements.detailReceiptFooter.innerHTML = `
+              <span class="badge-paid" style="margin-right: auto;">✓ Paid</span>
+              <button class="btn-secondary" id="btn-dismiss-receipt">Close</button>
+            `;
+            document.getElementById("btn-dismiss-receipt")?.addEventListener("click", () => {
+              elements.receiptModalOverlay.classList.remove("open");
+            });
+          } else {
+            elements.detailReceiptFooter.innerHTML = `
+              <span style="color: var(--danger); font-size: 0.85rem; font-weight: 600; margin-right: auto;">Order ${escapeHtml(order.order_status)}</span>
+              <button class="btn-secondary" id="btn-dismiss-receipt">Close</button>
+            `;
+            document.getElementById("btn-dismiss-receipt")?.addEventListener("click", () => {
+              elements.receiptModalOverlay.classList.remove("open");
+            });
+          }
+        }
+
         elements.receiptModalOverlay.classList.add("open");
       }
     } catch (err) {
@@ -886,30 +977,64 @@
     elements.ordersHistoryList.innerHTML = orders
       .map((ord) => {
         const statusClass = getOrderStatusClass(ord.order_status);
+        const canPay = isOrderPayEligible(ord);
+        const isPaid = String(ord.payment_status || "").toLowerCase() === "paid";
 
         return `
-          <div class="order-history-card">
+          <div class="order-history-card" data-order-id="${ord.order_id}">
             <div>
               <div class="order-history-header">
                 <span class="order-history-id">Order #${ord.order_id}</span>
-                <span class="info-status ${statusClass}">${ord.order_status} · ${ord.payment_status}</span>
+                <span class="info-status ${statusClass}">${escapeHtml(ord.order_status)} &middot; ${escapeHtml(ord.payment_status)}</span>
               </div>
               <div class="order-history-rest">${escapeHtml(ord.restaurant_name)}</div>
               <div class="order-history-date">${escapeHtml(ord.created_at || "Recent")}</div>
             </div>
-            <div style="display: flex; align-items: center; gap: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
               <span class="order-history-total">${formatRupees(ord.total_amount)}</span>
               <button class="btn-secondary btn-sm btn-view-receipt" data-order-id="${ord.order_id}">View Receipt</button>
+              ${
+                canPay
+                  ? `<button class="btn-success btn-sm btn-pay-order" data-order-id="${ord.order_id}">Pay Now</button>`
+                  : isPaid
+                  ? `<span class="badge-paid">Paid</span>`
+                  : ""
+              }
             </div>
           </div>
         `;
       })
       .join("");
 
+    // Bind View Receipt buttons
     elements.ordersHistoryList.querySelectorAll(".btn-view-receipt").forEach((btn) => {
       btn.addEventListener("click", () => {
         const oid = Number(btn.getAttribute("data-order-id"));
         displayOrderReceipt(oid, "modal");
+      });
+    });
+
+    // Bind Pay Now buttons
+    elements.ordersHistoryList.querySelectorAll(".btn-pay-order").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const oid = Number(btn.getAttribute("data-order-id"));
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        try {
+          const res = await api.getOrder(oid);
+          const order = res.data;
+          if (!isOrderPayEligible(order)) {
+            showToast(`Order #${oid} is not eligible for payment (${order.order_status} / ${order.payment_status}).`, "warning");
+            loadOrderHistory();
+            return;
+          }
+          openPaymentModal(order);
+        } catch (err) {
+          showToast(`Could not load order for payment: ${err.message}`, "error");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Pay Now";
+        }
       });
     });
   }

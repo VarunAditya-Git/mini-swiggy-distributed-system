@@ -392,6 +392,17 @@ def _handle_simulate_payment(request_id: str, payload: dict) -> dict:
                     f"Cannot process payment for {order['order_status']} order {order_id}.",
                 )
 
+            if "customer_id" in payload and payload["customer_id"] is not None:
+                cust_id = payload["customer_id"]
+                if not isinstance(cust_id, int) or isinstance(cust_id, bool):
+                    return _err(request_id, ERR_INVALID_PAYLOAD, "'customer_id' must be an integer.")
+                if order["customer_id"] != cust_id:
+                    return _err(
+                        request_id,
+                        ERR_FORBIDDEN,
+                        f"Access denied: order {order_id} does not belong to customer {cust_id}.",
+                    )
+
             sim_status = str(payload.get("simulate_status", "")).lower()
             sim_failure = payload.get("simulate_failure", False)
             is_failure = (sim_failure is True) or (sim_status in ("failed", "fail"))

@@ -396,6 +396,14 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
 
                 # Ensure order_id from the URL path is passed in payload
                 body["order_id"] = order_id
+                if "customer_id" not in body:
+                    query = urllib.parse.parse_qs(parsed_url.query)
+                    cust_param = query.get("customer_id")
+                    if cust_param and cust_param[0]:
+                        try:
+                            body["customer_id"] = int(cust_param[0])
+                        except ValueError:
+                            pass
                 self._forward_and_respond("simulate_payment", body)
                 return
 

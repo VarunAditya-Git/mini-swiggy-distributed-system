@@ -1,8 +1,8 @@
 # Mini Swiggy — Distributed Food Delivery System
 
-> **Current branch: `feature/v3-seller-dashboard`**  
-> V0 (database), V1 (TCP client-server), V2 (core food ordering), and Customer Web Interface are merged into `main`.  
-> This branch implements **V3 — Seller Dashboard and Restaurant Management System**.
+> **Current branch: `feature/v3-1-deferred-payments`**  
+> V0 (database), V1 (TCP client-server), V2 (core food ordering), Web Extension, and V3 (Seller Dashboard) are completed.  
+> This branch implements **V3.1 — Deferred Customer Payments & Lifecycle Synchronization**.
 
 ---
 
@@ -16,7 +16,8 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | **V1** | Merged to `main` | Raw TCP sockets · Newline-delimited JSON framing · Read-only actions · 42 tests |
 | **V2** | Merged to `main` | Core Food Ordering · Atomic transactions · Price snapshots · Simulated payments · Order history · 41 tests |
 | **Web Extension** | Merged to `main` | Customer Web Interface & HTTP Gateway · Modern web UI · REST API bridge · Single-restaurant cart · Receipt viewer · 18 tests |
-| **V3** | **Complete** | **Seller Dashboard & Restaurant Management System** · Multi-tenant kitchen management · Order lifecycle state machine · Real-time menu management & availability · 67 new tests (**179 total**) |
+| **V3** | Merged | **Seller Dashboard & Restaurant Management System** · Multi-tenant kitchen management · Order lifecycle state machine · Real-time menu management & availability · 67 tests |
+| **V3.1** | **Complete** | **Deferred Customer Payments** · Independent order and payment lifecycles · Pay Now from history & receipt · Zero-trust customer ownership verification · Refund-module compatibility · 12 new tests (**191 total**) |
 | **V4** (planned) | Future | Independent networked microservices (Restaurant, Ordering, Payment, Delivery) |
 | **V5+** (planned) | Future | Asynchronous messaging, caching, fault tolerance, and consensus |
 
@@ -32,7 +33,7 @@ Mini Swiggy is an **educational, incremental** food-delivery platform designed t
 | Web Gateway | `http.server` (stdlib) | Concurrent ThreadingHTTPServer bridging HTTP to TCP |
 | Frontend | Vanilla HTML5, CSS3, JS | Modern, responsive Indian food-delivery & kitchen partner interfaces |
 | Storage | SQLite (`sqlite3` stdlib) | Relational persistence with foreign keys and ACID transactions |
-| Testing | `pytest` | Comprehensive unit and real TCP integration testing (**179 automated tests**) |
+| Testing | `pytest` | Comprehensive unit and real TCP integration testing (**191 automated tests**) |
 
 ---
 
@@ -64,7 +65,7 @@ MiniSwiggy/
 │   └── http_gateway.py          ← HTTP gateway translating REST GET/POST/PATCH to TCP NDJSON
 │
 ├── web/
-│   ├── index.html               ← Customer food ordering storefront
+│   ├── index.html               ← Customer food ordering storefront with Pay Now actions
 │   ├── styles.css               ← Swiggy-inspired visual design system
 │   ├── app.js                   ← Customer client application logic & status rendering
 │   ├── seller.html              ← Dedicated Restaurant Seller Dashboard (KDS)
@@ -87,7 +88,8 @@ MiniSwiggy/
     ├── test_web_gateway.py       ← Web: 18 unit & integration tests for gateway and security guards
     ├── test_v3_seller_handler.py ← V3: 34 unit tests for seller auth, order transitions, menu CRUD
     ├── test_v3_tcp.py            ← V3: 5 integration tests for seller operations over raw TCP
-    └── test_v3_gateway.py        ← V3: 13 integration tests for seller REST API endpoints & static routing
+    ├── test_v3_gateway.py        ← V3: 13 integration tests for seller REST API endpoints & static routing
+    └── test_v3_1_deferred_payment.py ← V3.1: 12 tests for deferred payment flows, independence, retries, auth
 ```
 
 ---

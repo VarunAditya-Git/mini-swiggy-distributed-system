@@ -217,7 +217,7 @@ Run all tests across V0, V1, V2, and V3:
 python -m pytest
 ```
 
-**Result**: 179 passed in ~52 seconds.
+**Result**: 191 passed in ~46 seconds (179 baseline + 12 V3.1 tests).
 
 ---
 
@@ -232,3 +232,28 @@ python -m pytest
 ### Educational Design Limitations
 - **Development-Only Authentication**: User identities are passed as development parameters (`seller_id=2`, `customer_id=1`). Production JWT/session tokens and cryptographic authentication are intentionally deferred to future iterations.
 - **Single Backend Instance**: The TCP server is a single-node daemon. Load balancing, Raft consensus, and distributed database sharding are not implemented.
+
+---
+
+## 10. V3.1 Deferred Customer Payments & Lifecycle Synchronization
+
+### Overview
+In V3.1, customers can initiate payment for unpaid orders after checkout:
+- **Eligible Order Statuses**: `PENDING` (or `PLACED`), `ACCEPTED`, `PREPARING`, `READY_FOR_PICKUP`.
+- **Ineligible Statuses**: `REJECTED`, `CANCELLED` (terminal states block payment).
+- **UI Locations**:
+  1. Order History card: clearly visible **Pay Now** button alongside **View Receipt**.
+  2. Order Details / Receipt modal: dedicated **Pay Now &middot; ₹Amount** button in footer.
+  3. Revisit or page refresh: retains **Pay Now** dynamically loaded from database records.
+
+### Order and Payment State Independence
+- `ACCEPTED` + payment → payment status becomes `paid`; order remains `ACCEPTED`.
+- `PREPARING` + payment → payment status becomes `paid`; order remains `PREPARING`.
+- `READY_FOR_PICKUP` + payment → payment status becomes `paid`; order remains `READY_FOR_PICKUP`.
+- `PLACED`/`PENDING` + payment → advances to `ACCEPTED` preserving initial checkout flow.
+
+### Refund Module Compatibility (Pending V3.1 Future Work)
+- A paid order rejected by the seller is eligible for a full refund.
+- An unpaid rejected order does not trigger a refund.
+- No fake refunds or artificial refunded flags are created without audit records. Full automated refund processing is scheduled as pending V3.1 scope.
+

@@ -1252,3 +1252,68 @@ body {
     max-width: 100%;
   }
 }
+
+/* -------------------------------------------------------------
+   V3.1 Deferred Payment Styles
+   ------------------------------------------------------------- */
+.badge-paid {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background-color: var(--success-light);
+  color: var(--success);
+  border: 1px solid rgba(22, 163, 74, 0.25);
+}
+
+.badge-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background-color: var(--warning-light);
+  color: var(--warning);
+  border: 1px solid rgba(234, 88, 12, 0.25);
+}
+
+.btn-pay-order, .btn-pay-from-receipt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(22, 163, 74, 0.25);
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-pay-order:hover, .btn-pay-from-receipt:hover {
+  background: linear-gradient(135deg, #15803d, #166534);
+  box-shadow: 0 4px 8px rgba(22, 163, 74, 0.35);
+  transform: translateY(-1px);
+}
+
+.btn-pay-order:active, .btn-pay-from-receipt:active {
+  transform: translateY(0);
+}
+
+.btn-pay-order:disabled, .btn-pay-from-receipt:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
+}
+

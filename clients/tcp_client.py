@@ -184,7 +184,8 @@ class SwiggyClient:
 
     def simulate_payment(self, order_id: int, simulate_status: str = "paid",
                          payment_method: str = "simulated_upi",
-                         simulate_failure: bool = False) -> dict:
+                         simulate_failure: bool = False,
+                         customer_id: int | None = None) -> dict:
         """
         Simulate payment for an order.
 
@@ -193,13 +194,17 @@ class SwiggyClient:
             simulate_status:  'paid' or 'failed'.
             payment_method:   Payment method description.
             simulate_failure: If True, forces payment failure simulation.
+            customer_id:      Optional customer user ID for ownership validation.
         """
-        return self.send("simulate_payment", {
+        payload = {
             "order_id": order_id,
             "simulate_status": simulate_status,
             "payment_method": payment_method,
             "simulate_failure": simulate_failure,
-        })
+        }
+        if customer_id is not None:
+            payload["customer_id"] = customer_id
+        return self.send("simulate_payment", payload)
 
     def get_order(self, order_id: int) -> dict:
         """Retrieve details and item snapshots of an order."""
@@ -344,6 +349,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     pay_p = subparsers.add_parser("simulate_payment", help="Simulate payment for an order")
     pay_p.add_argument("order_id", type=int, help="Order ID to pay for")
+    pay_p.add_argument("--customer-id", type=int, default=None, help="Customer user ID for ownership validation")
     pay_p.add_argument("--fail", action="store_true", help="Simulate payment failure")
     pay_p.add_argument("--method", default="simulated_upi", help="Payment method name")
 
@@ -417,6 +423,7 @@ if __name__ == "__main__":
                     simulate_status=status,
                     payment_method=args.method,
                     simulate_failure=args.fail,
+                    customer_id=args.customer_id,
                 ))
             elif args.command == "get_order":
                 _print_response(client.get_order(args.order_id))
