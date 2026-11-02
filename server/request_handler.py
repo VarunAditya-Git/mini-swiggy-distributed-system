@@ -22,6 +22,15 @@ Supported actions (V2):
 import sqlite3
 import uuid
 from database.db import get_connection
+from server.auth import (
+    hash_password,
+    verify_password,
+    validate_password,
+    validate_email,
+    generate_token,
+    hash_token,
+)
+from server.email_adapter import default_email_adapter
 
 
 # -------------------------------------------------------------------
@@ -41,6 +50,16 @@ ERR_REFUND_NOT_FOUND          = "REFUND_NOT_FOUND"
 ERR_REFUND_ALREADY_PROCESSED  = "REFUND_ALREADY_PROCESSED"
 ERR_REFUND_NOT_RETRYABLE      = "REFUND_NOT_RETRYABLE"
 ERR_DB_ERROR                  = "DB_ERROR"
+
+# V4.1 Auth error codes
+ERR_INVALID_CREDENTIALS       = "INVALID_CREDENTIALS"
+ERR_EMAIL_ALREADY_EXISTS      = "EMAIL_ALREADY_EXISTS"
+ERR_EMAIL_NOT_VERIFIED        = "EMAIL_NOT_VERIFIED"
+ERR_ACCOUNT_DEACTIVATED       = "ACCOUNT_DEACTIVATED"
+ERR_INVALID_TOKEN             = "INVALID_TOKEN"
+ERR_TOKEN_ALREADY_USED        = "TOKEN_ALREADY_USED"
+ERR_TOKEN_EXPIRED             = "TOKEN_EXPIRED"
+ERR_UNAUTHORIZED              = "UNAUTHORIZED"
 
 
 # -------------------------------------------------------------------
@@ -1810,6 +1829,338 @@ def _handle_retry_refund(request_id: str, payload: dict) -> dict:
 
 
 # -------------------------------------------------------------------
+# Action: register (V4.1)
+# -------------------------------------------------------------------
+def _handle_register(request_id: str, payload: dict) -> dict:
+    """
+    Register a new user account with hashed password and email verification.
+
+    Payload:
+      name: str (required)
+      email: str (required)
+      password: str (required, min 8 chars, letter + digit)
+      role: str (optional, default 'customer', allowed 'customer' or 'seller')
+    """
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'name' is required.")
+    name = name.strip()
+
+    email = payload.get("email")
+    if not isinstance(email, str) or not validate_email(email):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "A valid 'email' address is required.")
+    email = email.strip().lower()
+
+    password = payload.get("password")
+    is_valid_pwd, pwd_err = validate_password(password)
+    if not is_valid_pwd:
+        return _err(request_id, ERR_INVALID_PAYLOAD, pwd_err)
+
+    role = payload.get("role", "customer")
+    if not isinstance(role, str) or role not in ("customer", "seller"):
+        return _err(request_id, ERR_UNAUTHORIZED_ROLE, "Public registration is only permitted for 'customer' and 'seller' roles.")
+
+    pwd_hash = hash_password(password)
+    raw_token, token_hash = generate_token()
+
+    try:
+        with get_connection() as conn:
+            # Check unique email
+            existing = conn.execute("SELECT user_id FROM users WHERE email = ?;", (email,)).fetchone()
+            if existing:
+                return _err(request_id, ERR_EMAIL_ALREADY_EXISTS, f"Email '{email}' is already registered.")
+
+            cursor = conn.execute(
+                """
+                INSERT INTO users (name, email, password_hash, role, is_active, email_verified)
+                VALUES (?, ?, ?, ?, 1, 0);
+                """,
+                (name, email, pwd_hash, role),
+            )
+            user_id = cursor.lastrowid
+
+            conn.execute(
+                """
+                INSERT INTO email_verification_tokens (user_id, token_hash, token_type, expires_at)
+                VALUES (?, ?, 'registration', datetime('now', '+24 hours'));
+                """,
+                (user_id, token_hash),
+            )
+
+        # Dispatch verification email via adapter
+        verify_url = f"http://127.0.0.1:8000/api/auth/verify-email?token={raw_token}"
+        default_email_adapter.send_verification_email(email, verify_url)
+
+        return _ok(request_id, {
+            "user_id": user_id,
+            "name": name,
+            "email": email,
+            "role": role,
+            "email_verified": 0,
+            "verification_token": raw_token,
+            "message": "Registration successful. Please verify your email.",
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error during registration: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: verify_email (V4.1)
+# -------------------------------------------------------------------
+def _handle_verify_email(request_id: str, payload: dict) -> dict:
+    """
+    Verify a user's email using a single-use token.
+
+    Payload:
+      token: str (required raw token)
+    """
+    raw_token = payload.get("token")
+    if not isinstance(raw_token, str) or not raw_token.strip():
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'token' is required.")
+    raw_token = raw_token.strip()
+
+    token_hash = hash_token(raw_token)
+
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT token_id, user_id, expires_at, used_at,
+                       (datetime('now') > expires_at) AS is_expired
+                FROM email_verification_tokens
+                WHERE token_hash = ? AND token_type = 'registration';
+                """,
+                (token_hash,),
+            ).fetchone()
+
+            if not row:
+                return _err(request_id, ERR_INVALID_TOKEN, "Verification token is invalid or does not exist.")
+
+            if row["used_at"] is not None:
+                return _err(request_id, ERR_TOKEN_ALREADY_USED, "This verification token has already been used.")
+
+            if row["is_expired"]:
+                return _err(request_id, ERR_TOKEN_EXPIRED, "Verification token has expired. Please request a new one.")
+
+            # Mark token as used and verify user
+            conn.execute(
+                "UPDATE email_verification_tokens SET used_at = datetime('now') WHERE token_id = ?;",
+                (row["token_id"],),
+            )
+            conn.execute(
+                "UPDATE users SET email_verified = 1, updated_at = datetime('now') WHERE user_id = ?;",
+                (row["user_id"],),
+            )
+
+        return _ok(request_id, {
+            "user_id": row["user_id"],
+            "email_verified": 1,
+            "message": "Email verified successfully. You may now log in.",
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error verifying email: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: login (V4.1)
+# -------------------------------------------------------------------
+def _handle_login(request_id: str, payload: dict) -> dict:
+    """
+    Authenticate a user with email and password and issue a session token.
+
+    Payload:
+      email: str (required)
+      password: str (required)
+      ip_address: str (optional)
+      user_agent: str (optional)
+    """
+    email = payload.get("email")
+    password = payload.get("password")
+    if not isinstance(email, str) or not email.strip() or not isinstance(password, str):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'email' and 'password' are required.")
+    email = email.strip().lower()
+
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                """
+                SELECT user_id, name, email, password_hash, role, is_active, email_verified
+                FROM users
+                WHERE email = ?;
+                """,
+                (email,),
+            ).fetchone()
+
+            if not user or not verify_password(password, user["password_hash"]):
+                return _err(request_id, ERR_INVALID_CREDENTIALS, "Invalid email or password.")
+
+            if user["is_active"] == 0:
+                return _err(request_id, ERR_ACCOUNT_DEACTIVATED, "Account is deactivated.")
+
+            if user["email_verified"] == 0:
+                return _err(request_id, ERR_EMAIL_NOT_VERIFIED, "Email address is not verified. Please verify your email before logging in.")
+
+            raw_token, token_hash = generate_token()
+            ip_address = payload.get("ip_address")
+            user_agent = payload.get("user_agent")
+
+            conn.execute(
+                """
+                INSERT INTO sessions (session_id, user_id, expires_at, ip_address, user_agent)
+                VALUES (?, ?, datetime('now', '+24 hours'), ?, ?);
+                """,
+                (token_hash, user["user_id"], ip_address, user_agent),
+            )
+
+        return _ok(request_id, {
+            "session_token": raw_token,
+            "user": {
+                "user_id": user["user_id"],
+                "name": user["name"],
+                "email": user["email"],
+                "role": user["role"],
+                "email_verified": user["email_verified"],
+            },
+            "message": "Login successful.",
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error during login: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: logout (V4.1)
+# -------------------------------------------------------------------
+def _handle_logout(request_id: str, payload: dict) -> dict:
+    """
+    Revoke an active session.
+
+    Payload:
+      session_token: str (required)
+    """
+    session_token = payload.get("session_token")
+    if not isinstance(session_token, str) or not session_token.strip():
+        return _err(request_id, ERR_INVALID_PAYLOAD, "'session_token' is required.")
+    session_token = session_token.strip()
+
+    token_hash = hash_token(session_token)
+
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE sessions SET revoked_at = datetime('now') WHERE session_id = ? AND revoked_at IS NULL;",
+                (token_hash,),
+            )
+        return _ok(request_id, {"message": "Logged out successfully."})
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error during logout: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: get_session (V4.1)
+# -------------------------------------------------------------------
+def _handle_get_session(request_id: str, payload: dict) -> dict:
+    """
+    Validate a session token and return the associated authenticated user profile.
+
+    Payload:
+      session_token: str (required)
+    """
+    session_token = payload.get("session_token")
+    if not isinstance(session_token, str) or not session_token.strip():
+        return _err(request_id, ERR_UNAUTHORIZED, "Authentication session token is required.")
+    session_token = session_token.strip()
+
+    token_hash = hash_token(session_token)
+
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT s.session_id, s.user_id, s.expires_at, s.revoked_at,
+                       u.name, u.email, u.role, u.is_active, u.email_verified,
+                       (datetime('now') > s.expires_at) AS is_expired
+                FROM sessions s
+                JOIN users u ON s.user_id = u.user_id
+                WHERE s.session_id = ?;
+                """,
+                (token_hash,),
+            ).fetchone()
+
+            if not row or row["revoked_at"] is not None or row["is_expired"]:
+                return _err(request_id, ERR_UNAUTHORIZED, "Session is invalid or has expired.")
+
+            if row["is_active"] == 0:
+                return _err(request_id, ERR_ACCOUNT_DEACTIVATED, "Account is deactivated.")
+
+        return _ok(request_id, {
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "email": row["email"],
+            "role": row["role"],
+            "email_verified": row["email_verified"],
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error retrieving session: {exc}")
+
+
+# -------------------------------------------------------------------
+# Action: resend_verification_email (V4.1)
+# -------------------------------------------------------------------
+def _handle_resend_verification_email(request_id: str, payload: dict) -> dict:
+    """
+    Generate and dispatch a new verification link for an unverified account.
+
+    Payload:
+      email: str (required)
+    """
+    email = payload.get("email")
+    if not isinstance(email, str) or not validate_email(email):
+        return _err(request_id, ERR_INVALID_PAYLOAD, "A valid 'email' address is required.")
+    email = email.strip().lower()
+
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                "SELECT user_id, email_verified, is_active FROM users WHERE email = ?;",
+                (email,),
+            ).fetchone()
+
+            if not user:
+                return _ok(request_id, {"message": "If this email is registered and unverified, a new link has been dispatched."})
+
+            if user["is_active"] == 0:
+                return _err(request_id, ERR_ACCOUNT_DEACTIVATED, "Account is deactivated.")
+
+            if user["email_verified"] == 1:
+                return _ok(request_id, {"message": "Email is already verified. You may log in."})
+
+            raw_token, token_hash = generate_token()
+            conn.execute(
+                """
+                INSERT INTO email_verification_tokens (user_id, token_hash, token_type, expires_at)
+                VALUES (?, ?, 'registration', datetime('now', '+24 hours'));
+                """,
+                (user["user_id"], token_hash),
+            )
+
+        verify_url = f"http://127.0.0.1:8000/api/auth/verify-email?token={raw_token}"
+        default_email_adapter.send_verification_email(email, verify_url)
+
+        return _ok(request_id, {
+            "message": "Verification link has been sent.",
+            "verification_token": raw_token,
+        })
+
+    except sqlite3.Error as exc:
+        return _err(request_id, ERR_DB_ERROR, f"Database error resending verification email: {exc}")
+
+
+# -------------------------------------------------------------------
 # Dispatch table — maps action name → handler function
 # -------------------------------------------------------------------
 _HANDLERS = {
@@ -1832,6 +2183,13 @@ _HANDLERS = {
     "get_refund":                    _handle_get_refund,
     "get_refund_history":            _handle_get_refund_history,
     "retry_refund":                  _handle_retry_refund,
+    # V4.1 Auth actions
+    "register":                      _handle_register,
+    "verify_email":                  _handle_verify_email,
+    "login":                         _handle_login,
+    "logout":                        _handle_logout,
+    "get_session":                   _handle_get_session,
+    "resend_verification_email":     _handle_resend_verification_email,
 }
 
 

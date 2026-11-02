@@ -14,6 +14,11 @@ state as running it once – no duplicates.
 """
 
 from database.db import get_connection, init_db
+from server.auth import hash_password
+
+# Default seed password for development & test fixtures
+DEFAULT_SEED_PASSWORD = "Password123!"
+DEFAULT_SEED_HASH = hash_password(DEFAULT_SEED_PASSWORD)
 
 
 # -------------------------------------------------------------------
@@ -21,28 +26,35 @@ from database.db import get_connection, init_db
 # -------------------------------------------------------------------
 
 # Each user dict matches the columns in the users table.
-# password_hash is None – authentication is out of scope for Version 0.
-# In a real system you would NEVER store a plaintext password.
+# Pre-seeded users have default known passwords and verified status for test compatibility.
 SAMPLE_USERS = [
     {
         "name": "Alice Customer",
         "email": "alice@example.com",
         "role": "customer",
+        "password_hash": DEFAULT_SEED_HASH,
+        "email_verified": 1,
     },
     {
         "name": "Bob Seller",
         "email": "bob@example.com",
         "role": "seller",
+        "password_hash": DEFAULT_SEED_HASH,
+        "email_verified": 1,
     },
     {
         "name": "Carol Delivery",
         "email": "carol@example.com",
         "role": "delivery_partner",
+        "password_hash": DEFAULT_SEED_HASH,
+        "email_verified": 1,
     },
     {
         "name": "Dave Admin",
         "email": "dave@example.com",
         "role": "admin",
+        "password_hash": DEFAULT_SEED_HASH,
+        "email_verified": 1,
     },
 ]
 
@@ -203,16 +215,23 @@ def seed_data() -> None:
     with get_connection() as conn:
         # ----------------------------------------------------------
         # Seed sample users
-        # INSERT OR IGNORE skips rows that violate the UNIQUE(email)
-        # constraint instead of raising an error.
         # ----------------------------------------------------------
         for user in SAMPLE_USERS:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO users (name, email, password_hash, role)
-                VALUES (?, ?, NULL, ?);
+                INSERT INTO users (name, email, password_hash, role, email_verified)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    password_hash = COALESCE(users.password_hash, excluded.password_hash),
+                    email_verified = COALESCE(users.email_verified, excluded.email_verified);
                 """,
-                (user["name"], user["email"], user["role"]),
+                (
+                    user["name"],
+                    user["email"],
+                    user["password_hash"],
+                    user["role"],
+                    user.get("email_verified", 1),
+                ),
             )
 
         # ----------------------------------------------------------

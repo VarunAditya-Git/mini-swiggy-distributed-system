@@ -120,6 +120,57 @@ def migrate_db() -> None:
             );
         """)
 
+        # V4.1: Ensure users table has email_verified and updated_at columns
+        user_cols = [
+            row["name"] for row in conn.execute("PRAGMA table_info(users);").fetchall()
+        ]
+        if "email_verified" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1));"
+            )
+        if "updated_at" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';"
+            )
+            conn.execute(
+                "UPDATE users SET updated_at = datetime('now') WHERE updated_at = '';"
+            )
+
+        # V4.1: Ensure sessions table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id      TEXT    PRIMARY KEY,
+                user_id         INTEGER NOT NULL
+                                REFERENCES users(user_id)
+                                ON DELETE CASCADE,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                expires_at      TEXT    NOT NULL,
+                revoked_at      TEXT,
+                ip_address      TEXT,
+                user_agent      TEXT
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);")
+
+        # V4.1: Ensure email_verification_tokens table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                token_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL
+                                REFERENCES users(user_id)
+                                ON DELETE CASCADE,
+                token_hash      TEXT    NOT NULL UNIQUE,
+                token_type      TEXT    NOT NULL DEFAULT 'registration'
+                                CHECK (token_type IN ('registration', 'password_reset')),
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                expires_at      TEXT    NOT NULL,
+                used_at         TEXT
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tokens_token_hash ON email_verification_tokens(token_hash);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON email_verification_tokens(user_id);")
+
 
 def init_db() -> None:
     """

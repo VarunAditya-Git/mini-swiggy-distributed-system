@@ -12,15 +12,18 @@
 --    and Administrators.
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-    user_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    name          TEXT    NOT NULL,
-    email         TEXT    NOT NULL UNIQUE,          -- must be globally unique
-    password_hash TEXT,                             -- NULL until auth is wired up (future version)
-    role          TEXT    NOT NULL
-                    CHECK (role IN ('customer', 'seller', 'delivery_partner', 'admin')),
-    is_active     INTEGER NOT NULL DEFAULT 1        -- 1 = active, 0 = deactivated
-                    CHECK (is_active IN (0, 1)),
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT    NOT NULL,
+    email          TEXT    NOT NULL UNIQUE,          -- must be globally unique
+    password_hash  TEXT,                             -- scrypt hashed password
+    role           TEXT    NOT NULL
+                     CHECK (role IN ('customer', 'seller', 'delivery_partner', 'admin')),
+    is_active      INTEGER NOT NULL DEFAULT 1        -- 1 = active, 0 = deactivated
+                     CHECK (is_active IN (0, 1)),
+    email_verified INTEGER NOT NULL DEFAULT 0        -- 0 = unverified, 1 = verified
+                     CHECK (email_verified IN (0, 1)),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ---------------------------------------------------------------
@@ -173,4 +176,44 @@ CREATE TABLE IF NOT EXISTS refunds (
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ---------------------------------------------------------------
+-- 10. sessions (V4.1)
+--     Stores authenticated user sessions. Only token hashes are stored.
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id      TEXT    PRIMARY KEY,              -- SHA-256 hash of random session token
+    user_id         INTEGER NOT NULL
+                    REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT    NOT NULL,
+    revoked_at      TEXT,                             -- NULL if active; timestamp if revoked/logged out
+    ip_address      TEXT,
+    user_agent      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+-- ---------------------------------------------------------------
+-- 11. email_verification_tokens (V4.1)
+--     Stores single-use email verification tokens. Only hashes stored.
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+    token_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL
+                    REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+    token_hash      TEXT    NOT NULL UNIQUE,          -- SHA-256 hash of secret token
+    token_type      TEXT    NOT NULL DEFAULT 'registration'
+                    CHECK (token_type IN ('registration', 'password_reset')),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT    NOT NULL,
+    used_at         TEXT                              -- NULL until consumed
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_token_hash ON email_verification_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON email_verification_tokens(user_id);
+
 

@@ -24,6 +24,7 @@ Non-negotiable Rules:
 """
 
 import argparse
+from http import cookies
 import http.server
 import json
 import mimetypes
@@ -67,6 +68,15 @@ ERROR_STATUS_MAP = {
     "REFUND_NOT_FOUND": 404,
     "REFUND_ALREADY_PROCESSED": 409,
     "REFUND_NOT_RETRYABLE": 409,
+    # V4.1 Auth errors
+    "INVALID_CREDENTIALS": 401,
+    "EMAIL_ALREADY_EXISTS": 409,
+    "EMAIL_NOT_VERIFIED": 403,
+    "ACCOUNT_DEACTIVATED": 403,
+    "INVALID_TOKEN": 400,
+    "TOKEN_ALREADY_USED": 400,
+    "TOKEN_EXPIRED": 400,
+    "UNAUTHORIZED": 401,
 }
 
 
@@ -145,18 +155,37 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         """Suppress noisy default logging; emit clean gateway logs."""
         print(f"[gateway] {self.address_string()} - {format % args}")
 
-    def _send_json(self, status_code: int, data: dict) -> None:
-        """Serialize data to JSON and send with proper headers."""
+    def _send_json(self, status_code: int, data: dict, cookies_to_set: list[str] | None = None) -> None:
+        """Serialize data to JSON and send with proper headers, supporting secure cookies."""
         response_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response_bytes)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        if cookies_to_set:
+            for c in cookies_to_set:
+                self.send_header("Set-Cookie", c)
         self.end_headers()
         self.wfile.write(response_bytes)
+
+    def _get_session_token(self) -> str | None:
+        """Extract session token from Cookie header or Authorization Bearer header."""
+        cookie_header = self.headers.get("Cookie")
+        if cookie_header:
+            cookie = cookies.SimpleCookie()
+            try:
+                cookie.load(cookie_header)
+                if "session_id" in cookie:
+                    return cookie["session_id"].value
+            except Exception:
+                pass
+        auth_header = self.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            return auth_header[7:].strip()
+        return None
 
     def _send_error(self, status_code: int, code: str, message: str) -> None:
         """Send a standard JSON error response."""
@@ -251,6 +280,24 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         # 1. Health check endpoint
         if path == "/api/health":
             self._handle_health()
+            return
+
+        # V4.1 Auth: Get current user session (/api/auth/me)
+        if path == "/api/auth/me":
+            session_token = self._get_session_token()
+            if not session_token:
+                self._send_error(401, "UNAUTHORIZED", "Not authenticated.")
+                return
+            self._forward_and_respond("get_session", {"session_token": session_token})
+            return
+
+        # V4.1 Auth: Verify email token (/api/auth/verify-email)
+        if path == "/api/auth/verify-email":
+            token_param = query.get("token")
+            if not token_param or not token_param[0]:
+                self._send_error(400, "INVALID_REQUEST", "Query parameter 'token' is required.")
+                return
+            self._forward_and_respond("verify_email", {"token": token_param[0]})
             return
 
         # 2. List restaurants
@@ -425,6 +472,73 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
+
+        # V4.1 Auth: Register
+        if path == "/api/auth/register":
+            body = self._read_json_body()
+            if body is None:
+                return
+            self._forward_and_respond("register", body, success_status=201)
+            return
+
+        # V4.1 Auth: Login
+        if path == "/api/auth/login":
+            body = self._read_json_body()
+            if body is None:
+                return
+            body["ip_address"] = self.client_address[0] if self.client_address else None
+            body["user_agent"] = self.headers.get("User-Agent")
+            try:
+                backend_res = forward_tcp_request(
+                    action="login",
+                    payload=body,
+                    tcp_host=self.tcp_host,
+                    tcp_port=self.tcp_port,
+                )
+            except ConnectionRefusedError:
+                self._send_error(503, "TCP_BACKEND_UNAVAILABLE", "TCP backend unavailable.")
+                return
+            except socket.timeout:
+                self._send_error(504, "TCP_BACKEND_TIMEOUT", "TCP backend timed out.")
+                return
+            except Exception as exc:
+                self._send_error(502, "TCP_BACKEND_ERROR", str(exc))
+                return
+
+            if backend_res.get("ok"):
+                session_token = backend_res.get("data", {}).get("session_token")
+                cookie_val = f"session_id={session_token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400"
+                self._send_json(200, backend_res, cookies_to_set=[cookie_val])
+            else:
+                err_code = backend_res.get("error", {}).get("code", "UNKNOWN_ERROR")
+                http_status = ERROR_STATUS_MAP.get(err_code, 400)
+                self._send_json(http_status, backend_res)
+            return
+
+        # V4.1 Auth: Logout
+        if path == "/api/auth/logout":
+            session_token = self._get_session_token()
+            if session_token:
+                try:
+                    forward_tcp_request(
+                        action="logout",
+                        payload={"session_token": session_token},
+                        tcp_host=self.tcp_host,
+                        tcp_port=self.tcp_port,
+                    )
+                except Exception:
+                    pass
+            cookie_clear = "session_id=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            self._send_json(200, {"ok": True, "data": {"message": "Logged out successfully."}}, cookies_to_set=[cookie_clear])
+            return
+
+        # V4.1 Auth: Resend verification email
+        if path == "/api/auth/resend-verification":
+            body = self._read_json_body()
+            if body is None:
+                return
+            self._forward_and_respond("resend_verification_email", body)
+            return
 
         # 1. Create order: POST /api/orders
         if path == "/api/orders":
