@@ -78,3 +78,4 @@ class DevelopmentEmailAdapter(EmailAdapter):
 
 # Default singleton instance for the server
 default_email_adapter: EmailAdapter = DevelopmentEmailAdapter()
+

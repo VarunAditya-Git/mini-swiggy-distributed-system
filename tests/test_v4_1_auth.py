@@ -478,3 +478,4 @@ def test_gateway_auth_full_lifecycle(running_stack):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(me_req)
     assert exc_info.value.code == 401
+

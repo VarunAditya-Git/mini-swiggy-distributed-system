@@ -15,8 +15,9 @@
   // Application State
   // -------------------------------------------------------------------
   const state = {
-    customerId: 1, // Fixed development customer: Alice Customer (ID: 1)
-    customerName: "Alice Customer (ID: 1)",
+    user: null, // Populated from active session: { user_id, name, email, role, email_verified }
+    customerId: null, // Dynamically populated from active session
+    customerName: null,
     restaurants: [],
     currentRestaurant: null,
     menuItems: [],
@@ -28,6 +29,7 @@
     activeOrder: null, // order returned by backend during checkout
     pendingConflict: null, // holds item to add if user confirms restaurant switch
     currentView: "restaurants", // "restaurants" | "menu" | "orders"
+    pendingPostLoginAction: null, // e.g. "checkout" or "orders"
   };
 
   const STORAGE_KEY_CART = "miniswiggy_cart_v2";
@@ -45,6 +47,50 @@
     btnNavCart: document.getElementById("btn-nav-cart"),
     cartItemCount: document.getElementById("cart-item-count"),
     toastContainer: document.getElementById("toast-container"),
+
+    // Auth Nav & Profile
+    authNavLoggedOut: document.getElementById("auth-nav-logged-out"),
+    btnNavLogin: document.getElementById("btn-nav-login"),
+    btnNavRegister: document.getElementById("btn-nav-register"),
+    authNavLoggedIn: document.getElementById("auth-nav-logged-in"),
+    customerIdentityBadge: document.getElementById("customer-identity-badge"),
+    currentCustomerAvatar: document.getElementById("current-customer-avatar"),
+    currentCustomerName: document.getElementById("current-customer-name"),
+    btnNavLogout: document.getElementById("btn-nav-logout"),
+
+    // Auth Modal
+    authModalOverlay: document.getElementById("auth-modal-overlay"),
+    authModal: document.getElementById("auth-modal"),
+    tabBtnLogin: document.getElementById("tab-btn-login"),
+    tabBtnRegister: document.getElementById("tab-btn-register"),
+    btnCloseAuth: document.getElementById("btn-close-auth"),
+
+    // Login Form
+    formLogin: document.getElementById("form-login"),
+    loginEmail: document.getElementById("login-email"),
+    loginPassword: document.getElementById("login-password"),
+    loginErrorBox: document.getElementById("login-error-box"),
+    loginSuccessBox: document.getElementById("login-success-box"),
+    btnSubmitLogin: document.getElementById("btn-submit-login"),
+    linkSwitchToRegister: document.getElementById("link-switch-to-register"),
+
+    // Register Form
+    formRegister: document.getElementById("form-register"),
+    registerName: document.getElementById("register-name"),
+    registerEmail: document.getElementById("register-email"),
+    registerPassword: document.getElementById("register-password"),
+    registerConfirmPassword: document.getElementById("register-confirm-password"),
+    registerErrorBox: document.getElementById("register-error-box"),
+    registerSuccessBox: document.getElementById("register-success-box"),
+    btnSubmitRegister: document.getElementById("btn-submit-register"),
+    linkSwitchToLogin: document.getElementById("link-switch-to-login"),
+
+    // Verification Card
+    registerVerificationCard: document.getElementById("register-verification-card"),
+    verificationCardMsg: document.getElementById("verification-card-msg"),
+    devLinkPreview: document.getElementById("dev-link-preview"),
+    btnDevAutoVerify: document.getElementById("btn-dev-auto-verify"),
+    btnBackToLoginAfterVerify: document.getElementById("btn-back-to-login-after-verify"),
 
     // Views
     viewRestaurants: document.getElementById("view-restaurants"),
@@ -156,6 +202,7 @@
     async request(url, options = {}) {
       try {
         const response = await fetch(url, {
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
             ...options.headers,
@@ -186,6 +233,43 @@
       }
     },
 
+    // V4.1 Authentication APIs
+    register(payload) {
+      return this.request("/api/auth/register", {
+        method: "POST",
+        body: jsonSerialize(payload),
+      });
+    },
+
+    login(payload) {
+      return this.request("/api/auth/login", {
+        method: "POST",
+        body: jsonSerialize(payload),
+      });
+    },
+
+    logout() {
+      return this.request("/api/auth/logout", {
+        method: "POST",
+        body: jsonSerialize({}),
+      });
+    },
+
+    getMe() {
+      return this.request("/api/auth/me");
+    },
+
+    verifyEmail(token) {
+      return this.request(`/api/auth/verify-email?token=${encodeURIComponent(token)}`);
+    },
+
+    resendVerification(email) {
+      return this.request("/api/auth/resend-verification", {
+        method: "POST",
+        body: jsonSerialize({ email }),
+      });
+    },
+
     checkHealth() {
       return this.request("/api/health");
     },
@@ -213,21 +297,25 @@
     },
 
     getOrder(orderId, customerId = state.customerId) {
-      return this.request(`/api/orders/${orderId}?customer_id=${customerId}`);
+      const q = customerId ? `?customer_id=${customerId}` : "";
+      return this.request(`/api/orders/${orderId}${q}`);
     },
 
     getOrderHistory(customerId = state.customerId) {
-      return this.request(`/api/customers/${customerId}/orders`);
+      const path = customerId ? `/api/customers/${customerId}/orders` : `/api/customers/me/orders`;
+      return this.request(path);
     },
 
     getRefund(orderId, customerId = state.customerId) {
-      return this.request(`/api/orders/${orderId}/refund?customer_id=${customerId}`);
+      const q = customerId ? `?customer_id=${customerId}` : "";
+      return this.request(`/api/orders/${orderId}/refund${q}`);
     },
 
     retryRefund(orderId, customerId = state.customerId) {
+      const body = customerId ? { customer_id: customerId } : {};
       return this.request(`/api/orders/${orderId}/refund/retry`, {
         method: "POST",
-        body: jsonSerialize({ customer_id: customerId }),
+        body: jsonSerialize(body),
       });
     },
   };
@@ -252,6 +340,262 @@
     } catch {
       elements.statusDot.className = "status-dot status-disconnected";
       elements.backendStatusText.textContent = "Gateway Offline";
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Authentication & Session Management (V4.1)
+  // -------------------------------------------------------------------
+  async function checkSession() {
+    try {
+      const res = await api.getMe();
+      if (res && res.ok && res.data) {
+        setUserSession(res.data);
+      } else {
+        clearUserSession();
+      }
+    } catch {
+      clearUserSession();
+    }
+  }
+
+  function setUserSession(user) {
+    state.user = user;
+    state.customerId = user.user_id;
+    state.customerName = `${user.name} (ID: ${user.user_id})`;
+
+    if (elements.authNavLoggedOut) elements.authNavLoggedOut.style.display = "none";
+    if (elements.authNavLoggedIn) elements.authNavLoggedIn.style.display = "flex";
+    if (elements.currentCustomerName) elements.currentCustomerName.textContent = user.name;
+    if (elements.currentCustomerAvatar) {
+      elements.currentCustomerAvatar.textContent = (user.name || "U").charAt(0).toUpperCase();
+    }
+
+    // If order history is open, refresh
+    if (state.currentView === "orders") {
+      loadOrderHistory();
+    }
+  }
+
+  function clearUserSession() {
+    state.user = null;
+    state.customerId = null;
+    state.customerName = null;
+
+    if (elements.authNavLoggedOut) elements.authNavLoggedOut.style.display = "flex";
+    if (elements.authNavLoggedIn) elements.authNavLoggedIn.style.display = "none";
+    if (elements.currentCustomerName) elements.currentCustomerName.textContent = "Guest";
+    if (elements.currentCustomerAvatar) elements.currentCustomerAvatar.textContent = "?";
+  }
+
+  function openAuthModal(tab = "login") {
+    switchAuthTab(tab);
+    elements.authModalOverlay?.classList.add("open");
+  }
+
+  function closeAuthModal() {
+    elements.authModalOverlay?.classList.remove("open");
+    clearAuthAlerts();
+  }
+
+  function switchAuthTab(tab) {
+    clearAuthAlerts();
+    if (tab === "login") {
+      elements.tabBtnLogin?.classList.add("active");
+      elements.tabBtnRegister?.classList.remove("active");
+      if (elements.formLogin) elements.formLogin.style.display = "block";
+      if (elements.formRegister) elements.formRegister.style.display = "none";
+      if (elements.registerVerificationCard) elements.registerVerificationCard.style.display = "none";
+      setTimeout(() => elements.loginEmail?.focus(), 50);
+    } else {
+      elements.tabBtnLogin?.classList.remove("active");
+      elements.tabBtnRegister?.classList.add("active");
+      if (elements.formLogin) elements.formLogin.style.display = "none";
+      if (elements.formRegister) elements.formRegister.style.display = "block";
+      if (elements.registerVerificationCard) elements.registerVerificationCard.style.display = "none";
+      setTimeout(() => elements.registerName?.focus(), 50);
+    }
+  }
+
+  function showLoginError(msg) {
+    if (elements.loginErrorBox) {
+      elements.loginErrorBox.textContent = msg;
+      elements.loginErrorBox.style.display = "block";
+    }
+  }
+
+  function showLoginSuccess(msg) {
+    if (elements.loginSuccessBox) {
+      elements.loginSuccessBox.textContent = msg;
+      elements.loginSuccessBox.style.display = "block";
+    }
+  }
+
+  function showRegisterError(msg) {
+    if (elements.registerErrorBox) {
+      elements.registerErrorBox.textContent = msg;
+      elements.registerErrorBox.style.display = "block";
+    }
+  }
+
+  function clearAuthAlerts() {
+    if (elements.loginErrorBox) elements.loginErrorBox.style.display = "none";
+    if (elements.loginSuccessBox) elements.loginSuccessBox.style.display = "none";
+    if (elements.registerErrorBox) elements.registerErrorBox.style.display = "none";
+    if (elements.registerSuccessBox) elements.registerSuccessBox.style.display = "none";
+  }
+
+  async function handleLoginSubmit(e) {
+    e.preventDefault();
+    clearAuthAlerts();
+
+    const email = elements.loginEmail.value.trim();
+    const password = elements.loginPassword.value;
+
+    if (!email || !password) {
+      showLoginError("Email and password are required.");
+      return;
+    }
+
+    elements.btnSubmitLogin.disabled = true;
+    elements.btnSubmitLogin.textContent = "Logging in...";
+
+    try {
+      const res = await api.login({ email, password });
+      if (res.ok) {
+        setUserSession(res.data.user);
+        showToast(`Welcome back, ${res.data.user.name}!`, "success");
+        closeAuthModal();
+
+        // Resume any pending action
+        if (state.pendingPostLoginAction === "checkout") {
+          state.pendingPostLoginAction = null;
+          openCheckoutModal();
+        } else if (state.pendingPostLoginAction === "orders") {
+          state.pendingPostLoginAction = null;
+          switchView("orders");
+        }
+      }
+    } catch (err) {
+      if (err.code === "EMAIL_NOT_VERIFIED") {
+        showLoginError("Your email has not been verified yet. Check your terminal console or logs/dev_emails.jsonl for the verification link.");
+      } else {
+        showLoginError(err.message || "Invalid email or password.");
+      }
+    } finally {
+      elements.btnSubmitLogin.disabled = false;
+      elements.btnSubmitLogin.textContent = "Log In";
+    }
+  }
+
+  async function handleRegisterSubmit(e) {
+    e.preventDefault();
+    clearAuthAlerts();
+
+    const name = elements.registerName.value.trim();
+    const email = elements.registerEmail.value.trim();
+    const password = elements.registerPassword.value;
+    const confirmPassword = elements.registerConfirmPassword.value;
+
+    if (!name || !email || !password) {
+      showRegisterError("All fields are required.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showRegisterError("Passwords do not match.");
+      return;
+    }
+
+    if (password.length < 8) {
+      showRegisterError("Password must be at least 8 characters long.");
+      return;
+    }
+
+    elements.btnSubmitRegister.disabled = true;
+    elements.btnSubmitRegister.textContent = "Creating Account...";
+
+    try {
+      const res = await api.register({ name, email, password, role: "customer" });
+      if (res.ok) {
+        const token = res.data.verification_token;
+        showToast("Account created successfully! Verification required.", "success");
+
+        if (elements.formRegister) elements.formRegister.style.display = "none";
+        if (elements.registerVerificationCard) elements.registerVerificationCard.style.display = "block";
+        if (elements.verificationCardMsg) {
+          elements.verificationCardMsg.textContent = `Account created for ${email}. Please verify your email before logging in.`;
+        }
+
+        const devLink = `http://127.0.0.1:8000/api/auth/verify-email?token=${token}`;
+        if (elements.devLinkPreview) {
+          elements.devLinkPreview.innerHTML = `<code>${escapeHtml(devLink)}</code>`;
+        }
+
+        if (elements.btnDevAutoVerify) {
+          elements.btnDevAutoVerify.onclick = async () => {
+            elements.btnDevAutoVerify.disabled = true;
+            elements.btnDevAutoVerify.textContent = "Verifying...";
+            try {
+              const vRes = await api.verifyEmail(token);
+              if (vRes.ok) {
+                showToast("Email verified successfully! You can now log in.", "success");
+                switchAuthTab("login");
+                elements.loginEmail.value = email;
+                elements.loginPassword.value = password;
+                showLoginSuccess("Email verified successfully! Log in to continue.");
+              }
+            } catch (vErr) {
+              showToast(vErr.message || "Email verification failed.", "error");
+              elements.btnDevAutoVerify.disabled = false;
+              elements.btnDevAutoVerify.textContent = "Verify Email Now (Development Shortcut)";
+            }
+          };
+        }
+
+        if (elements.btnBackToLoginAfterVerify) {
+          elements.btnBackToLoginAfterVerify.onclick = () => {
+            switchAuthTab("login");
+            elements.loginEmail.value = email;
+          };
+        }
+      }
+    } catch (err) {
+      showRegisterError(err.message || "Registration failed.");
+    } finally {
+      elements.btnSubmitRegister.disabled = false;
+      elements.btnSubmitRegister.textContent = "Register Account";
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+      showToast("Logged out successfully.", "info");
+    } catch (err) {
+      console.warn("Logout error:", err);
+    } finally {
+      clearUserSession();
+      if (state.currentView === "orders") {
+        switchView("restaurants");
+      }
+    }
+  }
+
+  async function checkUrlParams() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get("token") || urlParams.get("verify_token");
+    if (token) {
+      try {
+        const res = await api.verifyEmail(token);
+        if (res.ok) {
+          showToast("Email verified successfully! Please log in.", "success");
+          openAuthModal("login");
+          showLoginSuccess("Email verified successfully! Please log in.");
+        }
+      } catch (err) {
+        showToast(err.message || "Verification token invalid or expired.", "error");
+      }
     }
   }
 
@@ -655,6 +999,13 @@
       return;
     }
 
+    if (!state.user) {
+      showToast("Please log in or register to place your food order.", "warning");
+      state.pendingPostLoginAction = "checkout";
+      openAuthModal("login");
+      return;
+    }
+
     // Close cart drawer
     elements.cartDrawerOverlay.classList.remove("open");
 
@@ -1030,6 +1381,18 @@
   // View 4: Order History
   // -------------------------------------------------------------------
   async function loadOrderHistory() {
+    if (!state.user) {
+      elements.ordersHistoryList.innerHTML = `
+        <div class="empty-state">
+          <p style="font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem;">Please log in to view your order history</p>
+          <p style="font-size: 0.85rem; margin-bottom: 1.25rem;">Sign in or create an account to view and track your food orders.</p>
+          <button class="btn-primary" id="btn-login-from-orders">Log In</button>
+        </div>
+      `;
+      document.getElementById("btn-login-from-orders")?.addEventListener("click", () => openAuthModal("login"));
+      return;
+    }
+
     elements.ordersHistoryList.innerHTML = `
       <div class="loading-state">
         <div class="spinner"></div>
@@ -1184,6 +1547,25 @@
       if (e.key === "Enter" || e.key === " ") switchView("restaurants");
     });
 
+    // Auth Nav & Modal Triggers
+    elements.btnNavLogin?.addEventListener("click", () => openAuthModal("login"));
+    elements.btnNavRegister?.addEventListener("click", () => openAuthModal("register"));
+    elements.btnNavLogout?.addEventListener("click", handleLogout);
+    elements.btnCloseAuth?.addEventListener("click", closeAuthModal);
+    elements.authModalOverlay?.addEventListener("click", (e) => {
+      if (e.target === elements.authModalOverlay) closeAuthModal();
+    });
+
+    // Auth Tab Switching
+    elements.tabBtnLogin?.addEventListener("click", () => switchAuthTab("login"));
+    elements.tabBtnRegister?.addEventListener("click", () => switchAuthTab("register"));
+    elements.linkSwitchToRegister?.addEventListener("click", () => switchAuthTab("register"));
+    elements.linkSwitchToLogin?.addEventListener("click", () => switchAuthTab("login"));
+
+    // Form Submissions
+    elements.formLogin?.addEventListener("submit", handleLoginSubmit);
+    elements.formRegister?.addEventListener("submit", handleRegisterSubmit);
+
     // Nav Orders & Cart
     elements.btnNavOrders.addEventListener("click", () => switchView("orders"));
     elements.btnNavCart.addEventListener("click", () => {
@@ -1254,10 +1636,12 @@
   // -------------------------------------------------------------------
   // Initialization
   // -------------------------------------------------------------------
-  function init() {
+  async function init() {
     setupEventListeners();
     loadCartFromStorage();
     checkBackendStatus();
+    await checkSession();
+    await checkUrlParams();
     switchView("restaurants");
 
     // Periodic health check (every 10 seconds)

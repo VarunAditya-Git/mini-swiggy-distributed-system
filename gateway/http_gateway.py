@@ -187,6 +187,24 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             return auth_header[7:].strip()
         return None
 
+    def _get_authenticated_user(self) -> dict | None:
+        """Retrieve authenticated user dictionary from session token if active."""
+        token = self._get_session_token()
+        if not token:
+            return None
+        try:
+            res = forward_tcp_request(
+                action="get_session",
+                payload={"session_token": token},
+                tcp_host=self.tcp_host,
+                tcp_port=self.tcp_port,
+            )
+            if res.get("ok"):
+                return res.get("data")
+        except Exception:
+            pass
+        return None
+
     def _send_error(self, status_code: int, code: str, message: str) -> None:
         """Send a standard JSON error response."""
         self._send_json(status_code, {
@@ -327,13 +345,17 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
                     return
                 payload = {"order_id": order_id}
-                cust_param = query.get("customer_id")
-                if cust_param and cust_param[0]:
-                    try:
-                        payload["customer_id"] = int(cust_param[0])
-                    except ValueError:
-                        self._send_error(400, "INVALID_REQUEST", "customer_id must be an integer.")
-                        return
+                auth_user = self._get_authenticated_user()
+                if auth_user and auth_user.get("role") == "customer":
+                    payload["customer_id"] = auth_user["user_id"]
+                else:
+                    cust_param = query.get("customer_id")
+                    if cust_param and cust_param[0]:
+                        try:
+                            payload["customer_id"] = int(cust_param[0])
+                        except ValueError:
+                            self._send_error(400, "INVALID_REQUEST", "customer_id must be an integer.")
+                            return
                 seller_param = query.get("seller_id")
                 if seller_param and seller_param[0]:
                     try:
@@ -354,20 +376,24 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._send_error(400, "INVALID_PATH_PARAM", "order_id in URL must be an integer.")
                     return
 
-                # Validate customer_id query parameter
-                cust_param = query.get("customer_id")
-                if not cust_param or not cust_param[0]:
-                    self._send_error(
-                        400,
-                        "INVALID_REQUEST",
-                        "Query parameter 'customer_id' is required to verify order ownership.",
-                    )
-                    return
-                try:
-                    customer_id = int(cust_param[0])
-                except ValueError:
-                    self._send_error(400, "INVALID_REQUEST", "Query parameter 'customer_id' must be an integer.")
-                    return
+                auth_user = self._get_authenticated_user()
+                if auth_user and auth_user.get("role") == "customer":
+                    customer_id = auth_user["user_id"]
+                else:
+                    # Validate customer_id query parameter
+                    cust_param = query.get("customer_id")
+                    if not cust_param or not cust_param[0]:
+                        self._send_error(
+                            400,
+                            "INVALID_REQUEST",
+                            "Query parameter 'customer_id' is required to verify order ownership.",
+                        )
+                        return
+                    try:
+                        customer_id = int(cust_param[0])
+                    except ValueError:
+                        self._send_error(400, "INVALID_REQUEST", "Query parameter 'customer_id' must be an integer.")
+                        return
 
                 self._handle_get_order(order_id, customer_id)
                 return
@@ -376,11 +402,20 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/customers/") and path.endswith("/orders"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "customers" and parts[3] == "orders":
-                try:
-                    customer_id = int(parts[2])
-                except ValueError:
-                    self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
-                    return
+                auth_user = self._get_authenticated_user()
+                if parts[2] == "me":
+                    if not auth_user:
+                        self._send_error(401, "UNAUTHORIZED", "Not authenticated.")
+                        return
+                    customer_id = auth_user["user_id"]
+                else:
+                    try:
+                        customer_id = int(parts[2])
+                    except ValueError:
+                        self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
+                        return
+                    if auth_user and auth_user.get("role") == "customer":
+                        customer_id = auth_user["user_id"]
                 self._forward_and_respond("get_order_history", {"customer_id": customer_id})
                 return
 
@@ -388,11 +423,20 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/customers/") and path.endswith("/refunds"):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "customers" and parts[3] == "refunds":
-                try:
-                    customer_id = int(parts[2])
-                except ValueError:
-                    self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
-                    return
+                auth_user = self._get_authenticated_user()
+                if parts[2] == "me":
+                    if not auth_user:
+                        self._send_error(401, "UNAUTHORIZED", "Not authenticated.")
+                        return
+                    customer_id = auth_user["user_id"]
+                else:
+                    try:
+                        customer_id = int(parts[2])
+                    except ValueError:
+                        self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
+                        return
+                    if auth_user and auth_user.get("role") == "customer":
+                        customer_id = auth_user["user_id"]
                 self._forward_and_respond("get_refund_history", {"customer_id": customer_id})
                 return
 
@@ -545,6 +589,9 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             body = self._read_json_body()
             if body is None:
                 return
+            auth_user = self._get_authenticated_user()
+            if auth_user and auth_user.get("role") == "customer":
+                body["customer_id"] = auth_user["user_id"]
             self._forward_and_respond("create_order", body, success_status=201)
             return
 
@@ -564,7 +611,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
 
                 # Ensure order_id from the URL path is passed in payload
                 body["order_id"] = order_id
-                if "customer_id" not in body:
+                auth_user = self._get_authenticated_user()
+                if auth_user and auth_user.get("role") == "customer":
+                    body["customer_id"] = auth_user["user_id"]
+                elif "customer_id" not in body:
                     query = urllib.parse.parse_qs(parsed_url.query)
                     cust_param = query.get("customer_id")
                     if cust_param and cust_param[0]:
@@ -590,20 +640,28 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     return
 
                 body["order_id"] = order_id
-                query = urllib.parse.parse_qs(parsed_url.query)
-                if "customer_id" not in body:
-                    cust_param = query.get("customer_id")
-                    if cust_param and cust_param[0]:
-                        try:
-                            body["customer_id"] = int(cust_param[0])
-                        except ValueError:
-                            pass
-                if "seller_id" not in body:
-                    seller_param = query.get("seller_id")
-                    if seller_param and seller_param[0]:
-                        try:
-                            body["seller_id"] = int(seller_param[0])
-                        except ValueError:
+                auth_user = self._get_authenticated_user()
+                if auth_user:
+                    if auth_user.get("role") == "customer":
+                        body["customer_id"] = auth_user["user_id"]
+                    elif auth_user.get("role") == "seller":
+                        body["seller_id"] = auth_user["user_id"]
+                else:
+                    query = urllib.parse.parse_qs(parsed_url.query)
+                    if "customer_id" not in body:
+                        cust_param = query.get("customer_id")
+                        if cust_param and cust_param[0]:
+                            try:
+                                body["customer_id"] = int(cust_param[0])
+                            except ValueError:
+                                pass
+                    if "seller_id" not in body:
+                        seller_param = query.get("seller_id")
+                        if seller_param and seller_param[0]:
+                            try:
+                                body["seller_id"] = int(seller_param[0])
+                            except ValueError:
+                                pass
                             pass
                 self._forward_and_respond("retry_refund", body)
                 return
