@@ -441,8 +441,9 @@ def test_gateway_auth_full_lifecycle(running_stack):
         assert "HttpOnly" in cookie_header
         assert "SameSite=Strict" in cookie_header
 
-        # Extract cookie value
+        # Extract cookie value and CSRF token
         cookie_val = cookie_header.split(";")[0]
+        csrf_token = login_data["data"]["csrf_token"]
 
     # 4. Access GET /api/auth/me without cookie -> 401 Unauthorized
     with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -462,10 +463,10 @@ def test_gateway_auth_full_lifecycle(running_stack):
         assert me_data["data"]["email"] == "rose@badwolf.com"
         assert me_data["data"]["name"] == "Rose Tyler"
 
-    # 6. Logout via POST /api/auth/logout -> clears cookie (Max-Age=0)
+    # 6. Logout via POST /api/auth/logout with CSRF token -> clears cookie (Max-Age=0)
     logout_req = urllib.request.Request(
         f"{base_url}/api/auth/logout",
-        headers={"Cookie": cookie_val, "Content-Length": "0"},
+        headers={"Cookie": cookie_val, "X-CSRF-Token": csrf_token, "Content-Length": "0"},
         method="POST",
     )
     with urllib.request.urlopen(logout_req) as resp:

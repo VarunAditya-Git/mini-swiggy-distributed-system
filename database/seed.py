@@ -13,12 +13,19 @@ Idempotent means: running this script twice produces the same database
 state as running it once – no duplicates.
 """
 
+import os
 from database.db import get_connection, init_db
 from server.auth import hash_password
 
 # Default seed password for development & test fixtures
 DEFAULT_SEED_PASSWORD = "Password123!"
 DEFAULT_SEED_HASH = hash_password(DEFAULT_SEED_PASSWORD)
+
+# Production security guard: prevent development credentials from leaking into production
+IS_PRODUCTION = (
+    os.environ.get("ENV") == "production"
+    or os.environ.get("MINI_SWIGGY_ENV") == "production"
+)
 
 
 # -------------------------------------------------------------------
@@ -210,6 +217,11 @@ def seed_data() -> None:
     Uses a single transaction so the database is never left in a
     partially-seeded state if something goes wrong.
     """
+    if os.environ.get("ENV") == "production" or os.environ.get("MINI_SWIGGY_ENV") == "production":
+        raise RuntimeError(
+            "CRITICAL SECURITY: Cannot seed default development accounts ('Password123!') in a production environment."
+        )
+
     print("[seed] Starting seed …")
 
     with get_connection() as conn:

@@ -30,9 +30,18 @@
     pendingConflict: null, // holds item to add if user confirms restaurant switch
     currentView: "restaurants", // "restaurants" | "menu" | "orders"
     pendingPostLoginAction: null, // e.g. "checkout" or "orders"
+    csrfToken: null, // CSRF protection token bound to session
   };
 
   const STORAGE_KEY_CART = "miniswiggy_cart_v2";
+
+  // Cookie helper for CSRF token extraction
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(";").shift();
+    return null;
+  }
 
   // -------------------------------------------------------------------
   // DOM Elements
@@ -201,12 +210,23 @@
   const api = {
     async request(url, options = {}) {
       try {
+        const method = (options.method || "GET").toUpperCase();
+        const headers = {
+          "Content-Type": "application/json",
+          ...options.headers,
+        };
+
+        // Attach CSRF protection header for state-changing requests
+        if (["POST", "PATCH", "PUT", "DELETE"].includes(method)) {
+          const csrf = state.csrfToken || getCookie("csrf_token");
+          if (csrf) {
+            headers["X-CSRF-Token"] = csrf;
+          }
+        }
+
         const response = await fetch(url, {
           credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-            ...options.headers,
-          },
+          headers,
           ...options,
         });
 
@@ -350,7 +370,7 @@
     try {
       const res = await api.getMe();
       if (res && res.ok && res.data) {
-        setUserSession(res.data);
+        setUserSession(res.data, res.data.csrf_token || res.csrf_token);
       } else {
         clearUserSession();
       }
@@ -359,10 +379,17 @@
     }
   }
 
-  function setUserSession(user) {
+  function setUserSession(user, csrfToken = null) {
     state.user = user;
     state.customerId = user.user_id;
     state.customerName = `${user.name} (ID: ${user.user_id})`;
+    if (csrfToken) {
+      state.csrfToken = csrfToken;
+    } else if (user.csrf_token) {
+      state.csrfToken = user.csrf_token;
+    } else {
+      state.csrfToken = getCookie("csrf_token");
+    }
 
     if (elements.authNavLoggedOut) elements.authNavLoggedOut.style.display = "none";
     if (elements.authNavLoggedIn) elements.authNavLoggedIn.style.display = "flex";
@@ -381,6 +408,7 @@
     state.user = null;
     state.customerId = null;
     state.customerName = null;
+    state.csrfToken = null;
 
     if (elements.authNavLoggedOut) elements.authNavLoggedOut.style.display = "flex";
     if (elements.authNavLoggedIn) elements.authNavLoggedIn.style.display = "none";
@@ -463,7 +491,7 @@
     try {
       const res = await api.login({ email, password });
       if (res.ok) {
-        setUserSession(res.data.user);
+        setUserSession(res.data.user, res.data.csrf_token);
         showToast(`Welcome back, ${res.data.user.name}!`, "success");
         closeAuthModal();
 

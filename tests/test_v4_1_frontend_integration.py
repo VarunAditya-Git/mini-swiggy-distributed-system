@@ -230,6 +230,7 @@ def test_customer_full_auth_and_order_flow(running_stack):
         assert login_res["ok"] is True
         new_user_id = login_res["data"]["user"]["user_id"]
         assert new_user_id > 4  # Beyond pre-seeded users 1-4
+        csrf_token = login_res["data"]["csrf_token"]
 
         cookie_hdr = resp.headers.get("Set-Cookie")
         assert "session_id=" in cookie_hdr
@@ -259,7 +260,7 @@ def test_customer_full_auth_and_order_flow(running_stack):
     order_req = urllib.request.Request(
         f"{base_url}/api/orders",
         data=order_body,
-        headers={"Content-Type": "application/json", "Cookie": cookie_val},
+        headers={"Content-Type": "application/json", "Cookie": cookie_val, "X-CSRF-Token": csrf_token},
         method="POST",
     )
     with urllib.request.urlopen(order_req) as resp:
@@ -280,7 +281,7 @@ def test_customer_full_auth_and_order_flow(running_stack):
     pay_req = urllib.request.Request(
         f"{base_url}/api/orders/{order_id}/payment",
         data=pay_body,
-        headers={"Content-Type": "application/json", "Cookie": cookie_val},
+        headers={"Content-Type": "application/json", "Cookie": cookie_val, "X-CSRF-Token": csrf_token},
         method="POST",
     )
     with urllib.request.urlopen(pay_req) as resp:
@@ -308,7 +309,7 @@ def test_customer_full_auth_and_order_flow(running_stack):
     logout_req = urllib.request.Request(
         f"{base_url}/api/auth/logout",
         data=b"{}",
-        headers={"Content-Type": "application/json", "Cookie": cookie_val},
+        headers={"Content-Type": "application/json", "Cookie": cookie_val, "X-CSRF-Token": csrf_token},
         method="POST",
     )
     with urllib.request.urlopen(logout_req) as resp:

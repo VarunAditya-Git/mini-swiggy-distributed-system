@@ -25,6 +25,8 @@ Non-negotiable Rules:
 
 import argparse
 from http import cookies
+import hashlib
+import hmac
 import http.server
 import json
 import mimetypes
@@ -49,6 +51,19 @@ DEFAULT_TCP_PORT = 5000
 MAX_BODY_BYTES = 64 * 1024  # 64 KiB
 TCP_CONNECT_TIMEOUT = 3.0   # seconds
 TCP_READ_TIMEOUT = 5.0      # seconds
+
+# Authentication & Security Constants (V4.1)
+SESSION_COOKIE_NAME = "session_id"
+ALT_COOKIE_NAME = "mini_swiggy_session"
+CSRF_COOKIE_NAME = "csrf_token"
+CSRF_SECRET_KEY = b"mini-swiggy-auth-csrf-secret-key-2026"
+
+
+def derive_csrf_token(session_token: str) -> str:
+    """Derive a deterministic, cryptographically secure CSRF token from a session token."""
+    if not session_token:
+        return ""
+    return hmac.new(CSRF_SECRET_KEY, session_token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 # Backend error code to HTTP status code mapping
 ERROR_STATUS_MAP = {
@@ -171,6 +186,33 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_bytes)
 
+    def _is_secure_connection(self) -> bool:
+        """Determine if running over HTTPS or in a production environment."""
+        if os.environ.get("ENV") == "production" or os.environ.get("MINI_SWIGGY_ENV") == "production":
+            return True
+        if os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes"):
+            return True
+        forwarded_proto = self.headers.get("X-Forwarded-Proto", "").lower()
+        if forwarded_proto == "https":
+            return True
+        return False
+
+    def _format_cookie(
+        self,
+        name: str,
+        value: str,
+        max_age: int = 86400,
+        http_only: bool = True,
+        same_site: str = "Strict",
+    ) -> str:
+        """Format a Set-Cookie header with security attributes (HttpOnly, SameSite, Secure)."""
+        parts = [f"{name}={value}", "Path=/", f"Max-Age={max_age}", f"SameSite={same_site}"]
+        if http_only:
+            parts.append("HttpOnly")
+        if self._is_secure_connection():
+            parts.append("Secure")
+        return "; ".join(parts)
+
     def _get_session_token(self) -> str | None:
         """Extract session token from Cookie header or Authorization Bearer header."""
         cookie_header = self.headers.get("Cookie")
@@ -178,14 +220,29 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             cookie = cookies.SimpleCookie()
             try:
                 cookie.load(cookie_header)
-                if "session_id" in cookie:
-                    return cookie["session_id"].value
+                if SESSION_COOKIE_NAME in cookie:
+                    return cookie[SESSION_COOKIE_NAME].value
+                if ALT_COOKIE_NAME in cookie:
+                    return cookie[ALT_COOKIE_NAME].value
             except Exception:
                 pass
         auth_header = self.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             return auth_header[7:].strip()
         return None
+
+    def _has_session_cookie(self) -> bool:
+        """Check if request arrived with an active session cookie."""
+        cookie_header = self.headers.get("Cookie", "")
+        return (f"{SESSION_COOKIE_NAME}=" in cookie_header) or (f"{ALT_COOKIE_NAME}=" in cookie_header)
+
+    def _verify_csrf(self, session_token: str) -> bool:
+        """Verify CSRF token for cookie-authenticated state-changing requests."""
+        csrf_header = self.headers.get("X-CSRF-Token")
+        if not csrf_header:
+            return False
+        expected = derive_csrf_token(session_token)
+        return hmac.compare_digest(csrf_header.strip(), expected)
 
     def _get_authenticated_user(self) -> dict | None:
         """Retrieve authenticated user dictionary from session token if active."""
@@ -306,7 +363,32 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             if not session_token:
                 self._send_error(401, "UNAUTHORIZED", "Not authenticated.")
                 return
-            self._forward_and_respond("get_session", {"session_token": session_token})
+            try:
+                backend_res = forward_tcp_request(
+                    action="get_session",
+                    payload={"session_token": session_token},
+                    tcp_host=self.tcp_host,
+                    tcp_port=self.tcp_port,
+                )
+            except ConnectionRefusedError:
+                self._send_error(503, "TCP_BACKEND_UNAVAILABLE", "TCP backend unavailable.")
+                return
+            except socket.timeout:
+                self._send_error(504, "TCP_BACKEND_TIMEOUT", "TCP backend timed out.")
+                return
+            except Exception as exc:
+                self._send_error(502, "TCP_BACKEND_ERROR", str(exc))
+                return
+
+            if backend_res.get("ok"):
+                csrf_token = derive_csrf_token(session_token)
+                backend_res["data"]["csrf_token"] = csrf_token
+                csrf_cookie = self._format_cookie(CSRF_COOKIE_NAME, csrf_token, max_age=86400, http_only=False)
+                self._send_json(200, backend_res, cookies_to_set=[csrf_cookie])
+            else:
+                err_code = backend_res.get("error", {}).get("code", "UNAUTHORIZED")
+                http_status = ERROR_STATUS_MAP.get(err_code, 401)
+                self._send_json(http_status, backend_res)
             return
 
         # V4.1 Auth: Verify email token (/api/auth/verify-email)
@@ -346,23 +428,33 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     return
                 payload = {"order_id": order_id}
                 auth_user = self._get_authenticated_user()
-                if auth_user and auth_user.get("role") == "customer":
-                    payload["customer_id"] = auth_user["user_id"]
+                if auth_user:
+                    if auth_user.get("role") == "customer":
+                        payload["customer_id"] = auth_user["user_id"]
+                    elif auth_user.get("role") == "seller":
+                        payload["seller_id"] = auth_user["user_id"]
                 else:
                     cust_param = query.get("customer_id")
+                    seller_param = query.get("seller_id")
+                    if not (cust_param and cust_param[0]) and not (seller_param and seller_param[0]):
+                        self._send_error(
+                            400,
+                            "INVALID_REQUEST",
+                            "Either 'customer_id' or 'seller_id' query parameter is required to verify refund authorization.",
+                        )
+                        return
                     if cust_param and cust_param[0]:
                         try:
                             payload["customer_id"] = int(cust_param[0])
                         except ValueError:
                             self._send_error(400, "INVALID_REQUEST", "customer_id must be an integer.")
                             return
-                seller_param = query.get("seller_id")
-                if seller_param and seller_param[0]:
-                    try:
-                        payload["seller_id"] = int(seller_param[0])
-                    except ValueError:
-                        self._send_error(400, "INVALID_REQUEST", "seller_id must be an integer.")
-                        return
+                    if seller_param and seller_param[0]:
+                        try:
+                            payload["seller_id"] = int(seller_param[0])
+                        except ValueError:
+                            self._send_error(400, "INVALID_REQUEST", "seller_id must be an integer.")
+                            return
                 self._forward_and_respond("get_refund", payload)
                 return
 
@@ -415,7 +507,13 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                         self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
                         return
                     if auth_user and auth_user.get("role") == "customer":
-                        customer_id = auth_user["user_id"]
+                        if customer_id != auth_user["user_id"]:
+                            self._send_error(
+                                403,
+                                "FORBIDDEN",
+                                f"Access denied: customer {auth_user['user_id']} cannot access order history of customer {customer_id}.",
+                            )
+                            return
                 self._forward_and_respond("get_order_history", {"customer_id": customer_id})
                 return
 
@@ -436,8 +534,21 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                         self._send_error(400, "INVALID_PATH_PARAM", "customer_id in URL must be an integer.")
                         return
                     if auth_user and auth_user.get("role") == "customer":
-                        customer_id = auth_user["user_id"]
+                        if customer_id != auth_user["user_id"]:
+                            self._send_error(
+                                403,
+                                "FORBIDDEN",
+                                f"Access denied: customer {auth_user['user_id']} cannot access refund history of customer {customer_id}.",
+                            )
+                            return
                 self._forward_and_respond("get_refund_history", {"customer_id": customer_id})
+                return
+
+        # Seller routes protection: reject customer access
+        if path.startswith("/api/seller/"):
+            auth_user = self._get_authenticated_user()
+            if auth_user and auth_user.get("role") != "seller":
+                self._send_error(403, "FORBIDDEN", "Access denied: seller role required.")
                 return
 
         # 8. Seller Profile: GET /api/seller/profile?seller_id=2
@@ -517,6 +628,21 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
 
+        # CSRF Protection for state-changing requests authenticated via session cookie
+        if self._has_session_cookie() and path not in (
+            "/api/auth/register",
+            "/api/auth/login",
+            "/api/auth/resend-verification",
+        ):
+            session_token = self._get_session_token()
+            if session_token and not self._verify_csrf(session_token):
+                self._send_error(
+                    403,
+                    "CSRF_VERIFICATION_FAILED",
+                    "CSRF verification failed. Missing or invalid 'X-CSRF-Token' header.",
+                )
+                return
+
         # V4.1 Auth: Register
         if path == "/api/auth/register":
             body = self._read_json_body()
@@ -551,8 +677,13 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
 
             if backend_res.get("ok"):
                 session_token = backend_res.get("data", {}).get("session_token")
-                cookie_val = f"session_id={session_token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400"
-                self._send_json(200, backend_res, cookies_to_set=[cookie_val])
+                csrf_token = derive_csrf_token(session_token)
+                backend_res["data"]["csrf_token"] = csrf_token
+                cookies_to_set = [
+                    self._format_cookie(SESSION_COOKIE_NAME, session_token, max_age=86400, http_only=True),
+                    self._format_cookie(CSRF_COOKIE_NAME, csrf_token, max_age=86400, http_only=False),
+                ]
+                self._send_json(200, backend_res, cookies_to_set=cookies_to_set)
             else:
                 err_code = backend_res.get("error", {}).get("code", "UNKNOWN_ERROR")
                 http_status = ERROR_STATUS_MAP.get(err_code, 400)
@@ -572,8 +703,12 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     )
                 except Exception:
                     pass
-            cookie_clear = "session_id=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
-            self._send_json(200, {"ok": True, "data": {"message": "Logged out successfully."}}, cookies_to_set=[cookie_clear])
+            cookies_clear = [
+                self._format_cookie(SESSION_COOKIE_NAME, "", max_age=0, http_only=True),
+                self._format_cookie(ALT_COOKIE_NAME, "", max_age=0, http_only=True),
+                self._format_cookie(CSRF_COOKIE_NAME, "", max_age=0, http_only=False),
+            ]
+            self._send_json(200, {"ok": True, "data": {"message": "Logged out successfully."}}, cookies_to_set=cookies_clear)
             return
 
         # V4.1 Auth: Resend verification email
@@ -590,7 +725,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             if body is None:
                 return
             auth_user = self._get_authenticated_user()
-            if auth_user and auth_user.get("role") == "customer":
+            if auth_user:
+                if auth_user.get("role") != "customer":
+                    self._send_error(403, "FORBIDDEN", "Only customers are authorized to place orders.")
+                    return
                 body["customer_id"] = auth_user["user_id"]
             self._forward_and_respond("create_order", body, success_status=201)
             return
@@ -612,7 +750,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 # Ensure order_id from the URL path is passed in payload
                 body["order_id"] = order_id
                 auth_user = self._get_authenticated_user()
-                if auth_user and auth_user.get("role") == "customer":
+                if auth_user:
+                    if auth_user.get("role") != "customer":
+                        self._send_error(403, "FORBIDDEN", "Only customers are authorized to make payments.")
+                        return
                     body["customer_id"] = auth_user["user_id"]
                 elif "customer_id" not in body:
                     query = urllib.parse.parse_qs(parsed_url.query)
@@ -644,8 +785,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 if auth_user:
                     if auth_user.get("role") == "customer":
                         body["customer_id"] = auth_user["user_id"]
+                        body.pop("seller_id", None)
                     elif auth_user.get("role") == "seller":
                         body["seller_id"] = auth_user["user_id"]
+                        body.pop("customer_id", None)
                 else:
                     query = urllib.parse.parse_qs(parsed_url.query)
                     if "customer_id" not in body:
@@ -662,8 +805,21 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                                 body["seller_id"] = int(seller_param[0])
                             except ValueError:
                                 pass
-                            pass
+                    if "customer_id" not in body and "seller_id" not in body:
+                        self._send_error(
+                            400,
+                            "INVALID_REQUEST",
+                            "Either 'customer_id' or 'seller_id' is required to retry refund.",
+                        )
+                        return
                 self._forward_and_respond("retry_refund", body)
+                return
+
+        # Seller routes protection for POST requests
+        if path.startswith("/api/seller/"):
+            auth_user = self._get_authenticated_user()
+            if auth_user and auth_user.get("role") != "seller":
+                self._send_error(403, "FORBIDDEN", "Access denied: seller role required.")
                 return
 
         # 4. Seller update order status: POST /api/seller/orders/{order_id}/status
@@ -731,6 +887,24 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
+
+        # CSRF Protection for state-changing PATCH requests authenticated via session cookie
+        if self._has_session_cookie():
+            session_token = self._get_session_token()
+            if session_token and not self._verify_csrf(session_token):
+                self._send_error(
+                    403,
+                    "CSRF_VERIFICATION_FAILED",
+                    "CSRF verification failed. Missing or invalid 'X-CSRF-Token' header.",
+                )
+                return
+
+        # Seller routes protection for PATCH requests
+        if path.startswith("/api/seller/"):
+            auth_user = self._get_authenticated_user()
+            if auth_user and auth_user.get("role") != "seller":
+                self._send_error(403, "FORBIDDEN", "Access denied: seller role required.")
+                return
 
         # 1. Update menu item availability: PATCH /api/seller/menu/{item_id}/availability
         if path.startswith("/api/seller/menu/") and path.endswith("/availability"):
