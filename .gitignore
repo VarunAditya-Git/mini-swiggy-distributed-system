@@ -63,3 +63,9 @@ desktop.ini
 Source Code/
 Documents/
 
+# ----- Development email logs & dev artifacts -----
+logs/
+*.jsonl
+dev_emails/
+
+

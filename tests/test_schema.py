@@ -69,6 +69,8 @@ EXPECTED_TABLES = {
     "delivery_partners",
     "deliveries",
     "refunds",
+    "sessions",
+    "email_verification_tokens",
 }
 
 
